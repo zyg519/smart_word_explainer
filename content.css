@@ -1,0 +1,14 @@
+/* ============================================================
+   划词解读 - Content Script 宿主样式
+   大部分样式在 Shadow DOM 内，此处仅做宿主元素的必要重置
+   ============================================================ */
+
+#word-explainer-host {
+  position: fixed;
+  z-index: 2147483647;
+  pointer-events: none;
+}
+
+#word-explainer-host > * {
+  pointer-events: auto;
+}

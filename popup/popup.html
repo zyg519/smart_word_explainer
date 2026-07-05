@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>划词解读 - 设置</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- 头部 -->
+    <header class="header">
+      <h1 class="title">
+        <svg width="20" height="20" viewBox="0 0 16 16" fill="none">
+          <path d="M8 1.5A6.5 6.5 0 111.5 8 6.507 6.507 0 018 1.5zm0 1A5.5 5.5 0 1013.5 8 5.506 5.506 0 008 2.5zm-.5 3h1v4h-1zm.5 5.5a.75.75 0 11-.75.75.752.752 0 01.75-.75z" fill="currentColor"/>
+        </svg>
+        划词解读
+      </h1>
+      <span class="version">v1.0.0</span>
+    </header>
+
+    <div class="status-bar" id="status-bar"></div>
+
+    <!-- 设置表单 -->
+    <form id="settings-form" class="form">
+      <!-- API 端点 -->
+      <div class="form-group">
+        <label for="api-endpoint" class="form-label">
+          API 端点地址
+          <span class="label-hint">（OpenAI 兼容格式）</span>
+        </label>
+        <input
+          type="url"
+          id="api-endpoint"
+          class="form-input"
+          placeholder="https://api.openai.com/v1/chat/completions"
+          autocomplete="off"
+        />
+      </div>
+
+      <!-- API Key -->
+      <div class="form-group">
+        <label for="api-key" class="form-label">
+          API Key
+          <span class="label-hint">（密钥仅存储在本地）</span>
+        </label>
+        <div class="input-password-wrapper">
+          <input
+            type="password"
+            id="api-key"
+            class="form-input"
+            placeholder="sk-..."
+            autocomplete="off"
+          />
+          <button type="button" class="btn-toggle-password" id="btn-toggle-password" title="显示/隐藏密钥">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" id="eye-icon">
+              <path d="M8 3.5C4.5 3.5 1.5 8 1.5 8s3 4.5 6.5 4.5S14.5 8 14.5 8 11.5 3.5 8 3.5z" stroke="currentColor" stroke-width="1" fill="none"/>
+              <circle cx="8" cy="8" r="2" fill="currentColor"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- 模型名称 -->
+      <div class="form-group">
+        <label for="model" class="form-label">模型名称</label>
+        <input
+          type="text"
+          id="model"
+          class="form-input"
+          placeholder="gpt-3.5-turbo"
+          autocomplete="off"
+        />
+      </div>
+
+      <!-- 高级设置折叠 -->
+      <details class="advanced-section">
+        <summary class="advanced-title">高级设置</summary>
+        <div class="advanced-content">
+          <!-- 系统提示词 -->
+          <div class="form-group">
+            <label for="system-prompt" class="form-label">
+              自定义系统提示词
+              <span class="label-hint">（留空使用默认，支持变量: <code>{CONTEXT}</code> <code>{SELECTION}</code>）</span>
+            </label>
+            <textarea
+              id="system-prompt"
+              class="form-textarea"
+              rows="4"
+              placeholder="留空使用默认提示词..."
+            ></textarea>
+          </div>
+
+          <!-- Temperature -->
+          <div class="form-group">
+            <label for="temperature" class="form-label">
+              温度 (Temperature): <span id="temp-value">0.7</span>
+            </label>
+            <input
+              type="range"
+              id="temperature"
+              class="form-range"
+              min="0"
+              max="2"
+              step="0.1"
+              value="0.7"
+            />
+            <span class="label-hint">越低越确定，越高越有创造性</span>
+          </div>
+
+          <!-- Max Tokens -->
+          <div class="form-group">
+            <label for="max-tokens" class="form-label">最大输出 Token 数</label>
+            <input
+              type="number"
+              id="max-tokens"
+              class="form-input"
+              min="64"
+              max="8192"
+              step="64"
+              placeholder="1024"
+            />
+          </div>
+
+          <!-- 上下文长度 -->
+          <div class="form-group">
+            <label for="max-context" class="form-label">
+              上下文截取长度
+              <span class="label-hint">（选中内容所在段落的截取长度）</span>
+            </label>
+            <input
+              type="number"
+              id="max-context"
+              class="form-input"
+              min="200"
+              max="8000"
+              step="100"
+              placeholder="2000"
+            />
+          </div>
+        </div>
+      </details>
+
+      <!-- 调试模式 -->
+      <div class="form-group debug-toggle">
+        <label class="form-checkbox-label">
+          <input type="checkbox" id="debug-enabled" />
+          <span class="checkbox-text">
+            🐛 调试模式
+            <span class="label-hint">（控制台输出详细日志，按 F12 查看）</span>
+          </span>
+        </label>
+      </div>
+
+      <!-- 按钮 -->
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary" id="btn-save">
+          保存设置
+        </button>
+        <button type="button" class="btn btn-secondary" id="btn-test">
+          测试连接
+        </button>
+      </div>
+    </form>
+
+    <!-- 使用说明 -->
+    <details class="help-section">
+      <summary class="help-title">使用说明</summary>
+      <div class="help-content">
+        <ol>
+          <li>在网页上选中需要解读的单词或段落</li>
+          <li>按住 <strong><kbd>Ctrl</kbd> + <kbd>Alt</kbd></strong> 然后选择文本，或选中后按 <strong><kbd>Ctrl</kbd> + <kbd>Alt</kbd></strong></li>
+          <li>弹出解读窗口，显示该词在上下文中的含义</li>
+          <li>在底部输入框继续提问，支持多轮对话</li>
+          <li>按 <kbd>Esc</kbd> 或点击弹窗外部关闭</li>
+          <li>可拖拽弹窗标题栏移动位置</li>
+        </ol>
+        <p class="help-note">
+          💡 支持任意 OpenAI 兼容 API（如 DeepSeek、通义千问、智谱等）。<br>
+          确保 API 端点支持 <code>/v1/chat/completions</code> 格式。
+        </p>
+      </div>
+    </details>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
