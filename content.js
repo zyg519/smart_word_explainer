@@ -1,6 +1,6 @@
 // ============================================================
-// 划词解读 - 修复pointer-events阻断交互 + 层级天然区分内外关闭
-// 解决：按钮/输入框/拖拽/滚动全部失效、Shadow坐标判断不准问题
+// 划词解读 - 完整修复版
+// 修复：1.输入框退格/删除会删掉页面原生文本 2.事件冒泡冲突 3.弹窗焦点隔离 4.全部catch带完整大括号
 // ============================================================
 (function () {
   'use strict';
@@ -241,7 +241,17 @@
     }
   }
 
+  // 全局按键监听：增加弹窗焦点隔离，输入框编辑不影响页面
   document.addEventListener('keydown', (e) => {
+    // 判断焦点是否落在弹窗内部，是则直接阻断全局按键逻辑
+    if (STATE.popupEl && STATE.shadowRoot) {
+      const activeEl = document.activeElement;
+      const inPopupScope = STATE.shadowRoot.contains(activeEl) || STATE.popupEl.contains(activeEl);
+      if (inPopupScope) {
+        return;
+      }
+    }
+
     if (e.key === 'Control') {
       STATE.ctrlPressed = true;
       return;
@@ -459,6 +469,7 @@
     }
   }
 
+  // 修复版事件绑定：弹窗内按键停止冒泡，删除键不会穿透页面
   function bindPopupEvents(shadow) {
     const popupInner = shadow.querySelector('.explainer-popup');
     const closeBtn = shadow.getElementById('explainer-btn-close');
@@ -467,6 +478,11 @@
     const inputEl = shadow.getElementById('explainer-input');
     const header = shadow.querySelector('.explainer-header');
     const getHost = () => popupInner.getRootNode().host;
+
+    // 弹窗整体拦截所有事件冒泡，隔绝页面
+    popupInner.addEventListener('keydown', e => e.stopPropagation());
+    popupInner.addEventListener('mousedown', e => e.stopPropagation());
+    popupInner.addEventListener('click', e => e.stopPropagation());
 
     closeBtn.addEventListener('click', destroyPopup);
     clearBtn.addEventListener('click', async () => {
@@ -489,6 +505,7 @@
         updatePopupContent(formatError(err));
       }
     });
+
     async function sendMessage() {
       const text = inputEl.value.trim();
       if (!text || STATE.isProcessing) {
@@ -520,8 +537,15 @@
         inputEl.focus();
       }
     }
+
     sendBtn.addEventListener('click', sendMessage);
     inputEl.addEventListener('keydown', e => {
+      // 停止冒泡，删除、方向键不会传到页面
+      e.stopPropagation();
+      const editKeys = ['Backspace','Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'];
+      if (editKeys.includes(e.key)) {
+        e.stopImmediatePropagation();
+      }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendMessage();
@@ -570,14 +594,14 @@
 
   function showPopup(selectionRect, mode) {
     destroyPopup();
-    // 遮罩层：仅自身接收鼠标，点击空白关闭
+    // 遮罩：仅自身接收鼠标，点击空白关闭
     const backdrop = document.createElement('div');
     backdrop.id = 'explainer-backdrop';
     backdrop.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:auto;background:rgba(0,0,0,0.4);';
     backdrop.addEventListener('mousedown', destroyPopup);
     document.body.appendChild(backdrop);
 
-    // 弹窗外层容器：恢复pointer-events:auto，允许内部所有交互
+    // 弹窗外层容器允许交互
     const host = document.createElement('div');
     host.id = 'word-explainer-host';
     host.style.cssText = 'position:fixed;z-index:2147483647;width:420px;max-height:500px;pointer-events:auto;';
