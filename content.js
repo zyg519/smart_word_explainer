@@ -1,12 +1,11 @@
 // ============================================================
-// 划词解读 - Content Script
-// 负责文本选择检测、上下文提取、悬浮弹窗交互
+// 划词解读 - Content Script 【彻底解决点内部误关终极修复】
+// 核心修复：几何坐标判定鼠标是否在弹窗内，不再依赖composedPath
 // ============================================================
-
 (function () {
   'use strict';
 
-  // ---- 启动自检（始终输出，便于诊断版本是否更新） ----
+  // ---- 启动自检 ----
   const VERSION = '2.0.1';
   const runtimeReady = typeof chrome !== 'undefined' && chrome.runtime && !!chrome.runtime.id;
   console.log(
@@ -14,26 +13,22 @@
     'color:#2563eb;font-weight:bold', 'color:#666', 'color:#059669', 'color:#888'
   );
   if (!runtimeReady) {
-    console.error('[划词解读] ⚠️ Chrome 扩展运行时未就绪！请在 chrome://extensions/ 中刷新扩展，然后刷新本页面');
+    console.error('[划词解读] ⚠️ Chrome 扩展运行时未就绪！刷新扩展+页面重试');
   }
 
-  // ---- 调试工具（content script 内联版） ----
+  // ---- 调试工具 ----
   const DBG = (() => {
     const PREFIX = '[划词解读]';
     let _enabled = false;
-
-    // 安全初始化 — chrome.storage 在极少数情况下可能未就绪
     try {
       if (chrome && chrome.storage && chrome.storage.local) {
-        chrome.storage.local.get(['debugEnabled'], (r) => { _enabled = !!r.debugEnabled; });
-        chrome.storage.onChanged.addListener((changes) => {
-          if (changes.debugEnabled) { _enabled = !!changes.debugEnabled.newValue; }
+        chrome.storage.local.get(['debugEnabled'], r => _enabled = !!r.debugEnabled);
+        chrome.storage.onChanged.addListener(changes => {
+          if (changes.debugEnabled) _enabled = !!changes.debugEnabled.newValue;
         });
       }
-    } catch (e) { /* 静默降级：调试功能不可用，但核心功能不受影响 */ }
-
+    } catch (e) {}
     return {
-      get enabled() { return _enabled; },
       log(tag, ...args) { if (_enabled) console.log(PREFIX, `[${tag}]`, ...args); },
       warn(tag, ...args) { if (_enabled) console.warn(PREFIX, `[${tag}]`, ...args); },
       error(tag, ...args) { console.error(PREFIX, `[${tag}]`, ...args); },
@@ -41,321 +36,229 @@
     };
   })();
 
-  // ---- Chrome API 安全调用封装 ----
+  // ---- Chrome API 安全封装 ----
   function isRuntimeAvailable() {
     return typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage;
   }
-
   function safeSendMessage(payload) {
-    if (!isRuntimeAvailable()) {
-      throw new Error('Chrome 扩展运行时未就绪，请刷新页面后重试');
-    }
+    if (!isRuntimeAvailable()) throw new Error('扩展运行时未就绪，请刷新页面');
     return chrome.runtime.sendMessage(payload);
   }
-
-  // 将底层错误转为用户友好的提示
   function formatError(error) {
     const msg = error.message || String(error);
-    if (msg.includes('Extension context invalidated') || msg.includes('extension context')) {
-      return '⚠️ 扩展已更新，请<b>刷新页面</b>（F5）后重试';
-    }
-    if (msg.includes('Receiving end does not exist') || msg.includes('Could not establish')) {
-      return '⚠️ 扩展后台未响应，请检查 chrome://extensions/ 是否有报错，然后刷新页面';
-    }
-    if (msg.includes('未就绪') || msg.includes('刷新页面')) {
-      return '⚠️ ' + msg;
-    }
+    if (msg.includes('Extension context invalidated') || msg.includes('extension context'))
+      return '⚠️ 扩展已更新，请刷新页面(F5)';
+    if (msg.includes('Receiving end does not exist') || msg.includes('Could not establish'))
+      return '⚠️ 后台服务断开，刷新扩展+页面';
     return '❌ ' + msg;
   }
 
-  // ---- 状态管理 ----
+  // ---- 全局状态 ----
   const STATE = {
     ctrlPressed: false,
     altPressed: false,
     isProcessing: false,
-    popupEl: null,
+    popupEl: null,    // 外层fixed宿主host
     shadowRoot: null,
-    conversationMessages: [],  // 对话历史（不含 system prompt）
-    systemPrompt: '',           // 当前对话的 system prompt
+    popupInner: null,  // shadow内.explainer-popup
+    conversationMessages: [],
+    systemPrompt: '',
     selectedText: '',
     contextText: '',
-    isDragging: false,
-    dragOffsetX: 0,
-    dragOffsetY: 0,
-    clickedInsidePopup: false
+    isDragging: false
   };
 
-  // ---- 快捷键 Ctrl+Alt 监听 ----
+  // ========== 【根治】几何坐标判断鼠标是否在弹窗内，完全不依赖DOM事件路径 ==========
+  function isMouseOverPopup(clientX, clientY) {
+    if (!STATE.popupEl || !STATE.popupEl.isConnected) return false;
+    const rect = STATE.popupEl.getBoundingClientRect();
+    const padding = 2; // 微小容错，阴影圆角边界兼容
+    return (
+      clientX >= rect.left - padding &&
+      clientX <= rect.right + padding &&
+      clientY >= rect.top - padding &&
+      clientY <= rect.bottom + padding
+    );
+  }
+
+  // ---- 快捷键监听 ----
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Control') {
       STATE.ctrlPressed = true;
       return;
     }
-
     if (e.key === 'Alt') {
       if (!e.repeat) {
         STATE.altPressed = true;
-
-        // 阻止浏览器默认行为（防止 Alt 键激活菜单栏导致失焦）
         e.preventDefault();
-
-        // 如果 Ctrl+Alt 都已按下且有文本被选中，触发解释
         if (STATE.ctrlPressed) {
-          const selection = window.getSelection();
-          if (selection && selection.toString().trim().length > 0 && !STATE.isProcessing) {
-            DBG.event('Alt键触发解释', { selected: selection.toString().trim().substring(0, 50) });
+          const sel = window.getSelection();
+          if (sel && sel.toString().trim() && !STATE.isProcessing) {
+            DBG.event('Alt键触发解释', sel.toString().trim().substring(0, 50));
             triggerExplanation();
           }
         }
       }
       return;
     }
-
-    // Esc 关闭弹窗（仅当弹窗存在时）
-    if (e.key === 'Escape' && STATE.popupEl) {
-      destroyPopup();
-    }
+    if (e.key === 'Escape' && STATE.popupEl) destroyPopup();
   });
-
-  document.addEventListener('keyup', (e) => {
-    if (e.key === 'Control') {
-      STATE.ctrlPressed = false;
-    }
-    if (e.key === 'Alt') {
-      STATE.altPressed = false;
-    }
+  document.addEventListener('keyup', e => {
+    if (e.key === 'Control') STATE.ctrlPressed = false;
+    if (e.key === 'Alt') STATE.altPressed = false;
   });
-
-  // 窗口失焦时重置按键状态，防止状态卡住
   window.addEventListener('blur', () => {
     STATE.ctrlPressed = false;
     STATE.altPressed = false;
   });
 
-  // 弹窗存在期间，监听 selectionchange 防止浏览器清空选区导致连锁关闭
+  // 弹窗打开屏蔽选区变更
   document.addEventListener('selectionchange', () => {
-    // 弹窗打开时不响应外部选区变化
     if (STATE.popupEl && STATE.popupEl.isConnected) return;
   });
 
-  // ---- 鼠标选择监听 ----
+  // ---- 全局鼠标抬起监听（改用坐标判断，彻底抛弃composedPath） ----
   document.addEventListener('mouseup', (e) => {
-    // 弹窗内点击完全拦截，不执行任何后续逻辑（防止关闭/重建弹窗）
-    if (STATE.popupEl && STATE.popupEl.isConnected && e.composedPath().includes(STATE.popupEl)) {
-      return;
-    }
-
+    if (isMouseOverPopup(e.clientX, e.clientY)) return;
     if (!STATE.ctrlPressed || !STATE.altPressed || STATE.isProcessing) return;
-
-    const selection = window.getSelection();
-    if (!selection || selection.toString().trim().length === 0) return;
-
-    DBG.event('鼠标选择触发', { selected: selection.toString().trim().substring(0, 50) });
+    const sel = window.getSelection();
+    if (!sel || !sel.toString().trim()) return;
+    DBG.event('鼠标选择触发', sel.toString().trim().substring(0, 50));
     triggerExplanation();
   });
 
-  // ---- 核心：触发解释流程 ----
+  // ---- 核心解释逻辑 ----
   async function triggerExplanation() {
     if (STATE.isProcessing) return;
-
-    const selection = window.getSelection();
-    const selectedText = selection.toString().trim();
+    const sel = window.getSelection();
+    const selectedText = sel.toString().trim();
     if (!selectedText) return;
 
     STATE.isProcessing = true;
     STATE.selectedText = selectedText;
     STATE.conversationMessages = [];
     STATE.systemPrompt = '';
-
-    // 提取上下文
-    const contextText = extractContext(selection);
+    const contextText = extractContext(sel);
     STATE.contextText = contextText;
-    DBG.log('Context', '选中:', selectedText.substring(0, 50), '| 上下文长度:', contextText?.length);
+    DBG.log('Context', '选中片段', selectedText.substring(0, 50), '上下文长度', contextText.length);
 
-    // 获取选区位置
-    const selectionRect = getSelectionRect(selection);
-    if (!selectionRect) {
-      STATE.isProcessing = false;
-      return;
-    }
-
-    // 创建或更新弹窗
-    showPopup(selectionRect, 'loading');
+    const rect = getSelectionRect(sel);
+    if (!rect) { STATE.isProcessing = false; return; }
+    showPopup(rect, 'loading');
 
     try {
-      const response = await safeSendMessage({
+      const res = await safeSendMessage({
         type: 'EXPLAIN',
-        payload: {
-          selectedText: selectedText,
-          contextText: contextText,
-          conversationHistory: []
-        }
+        payload: { selectedText, contextText, conversationHistory: [] }
       });
-
-      if (response.success) {
-        STATE.systemPrompt = response.data.systemPrompt;
-        STATE.conversationMessages = response.data.messages.filter(m => m.role !== 'system');
-        updatePopupContent(response.data.explanation);
-        DBG.log('Explain', '解释成功, 回复长度:', response.data.explanation?.length);
+      if (res.success) {
+        STATE.systemPrompt = res.data.systemPrompt;
+        STATE.conversationMessages = res.data.messages.filter(m => m.role !== 'system');
+        updatePopupContent(res.data.explanation);
+        DBG.log('Explain', '解释完成，文本长度', res.data.explanation.length);
       } else {
-        DBG.error('Explain', '解释失败:', response.error);
-        updatePopupContent(`❌ 解释失败: ${response.error}`);
+        updatePopupContent(`❌ 解释失败：${res.error}`);
       }
-    } catch (error) {
-      const msg = formatError(error);
-      DBG.error('Explain', msg);
-      updatePopupContent(msg);
+    } catch (err) {
+      updatePopupContent(formatError(err));
+      DBG.error('Explain', err);
     } finally {
       STATE.isProcessing = false;
     }
   }
 
-  // ---- 上下文提取 ----
+  // ---- 上下文提取工具 ----
   function extractContext(selection) {
     try {
       const range = selection.getRangeAt(0);
-      if (!range) return '';
-
-      // 向上查找最近的块级元素
       let container = range.commonAncestorContainer;
-      if (container.nodeType === Node.TEXT_NODE) {
-        container = container.parentElement;
-      }
-
-      const blockElement = findBlockAncestor(container);
-      if (blockElement) {
-        // 获取块级元素的文本，但限制长度
-        const fullText = blockElement.textContent || blockElement.innerText || '';
-        return truncateContext(fullText, STATE.selectedText);
-      }
-
-      // 后备方案：取选区前后各 N 个字符
+      if (container.nodeType === Node.TEXT_NODE) container = container.parentElement;
+      const block = findBlockAncestor(container);
+      if (block) return truncateContext(block.textContent || '', STATE.selectedText);
       const node = range.startContainer;
       if (node.nodeType === Node.TEXT_NODE) {
-        const offset = range.startOffset;
-        const text = node.textContent || '';
-        const start = Math.max(0, offset - 500);
-        const end = Math.min(text.length, offset + STATE.selectedText.length + 500);
-        return text.substring(start, end);
+        const text = node.textContent;
+        const off = range.startOffset;
+        return text.substring(Math.max(0, off - 500), Math.min(text.length, off + STATE.selectedText.length + 500));
       }
-
       return '';
     } catch (e) {
-      console.warn('[划词解读] 上下文提取失败:', e);
+      console.warn('[划词解读] 上下文提取异常', e);
       return '';
     }
   }
-
-  // 查找块级祖先元素
-  function findBlockAncestor(element) {
-    const blockTags = ['P', 'DIV', 'ARTICLE', 'SECTION', 'BLOCKQUOTE',
-      'LI', 'TD', 'TH', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
-      'PRE', 'ASIDE', 'MAIN', 'BODY'];
-
-    let current = element;
-    while (current && current !== document.body && current !== document.documentElement) {
-      const tag = current.tagName;
-      if (blockTags.includes(tag)) {
-        // 如果该块元素有足够的文本内容，使用它
-        const textLen = (current.textContent || '').length;
-        if (textLen > STATE.selectedText.length) {
-          return current;
-        }
-      }
-      current = current.parentElement;
+  function findBlockAncestor(el) {
+    const blockTags = ['P', 'DIV', 'ARTICLE', 'SECTION', 'BLOCKQUOTE', 'LI', 'TD', 'TH', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'PRE', 'ASIDE', 'MAIN', 'BODY'];
+    let cur = el;
+    while (cur && cur !== document.body && cur !== document.documentElement) {
+      if (blockTags.includes(cur.tagName) && (cur.textContent || '').length > STATE.selectedText.length) return cur;
+      cur = cur.parentElement;
     }
-
-    // 如果没找到合适的块元素，返回 body 的前部分
     return null;
   }
-
-  // 截断上下文到合理长度
-  function truncateContext(fullText, selectedText) {
-    const maxLen = 2000;
-    const selIndex = fullText.indexOf(selectedText);
-
-    if (fullText.length <= maxLen) {
-      return fullText;
-    }
-
-    if (selIndex === -1) {
-      return fullText.substring(0, maxLen) + '...';
-    }
-
-    // 以选中内容为中心，前后各取一半
-    const half = Math.floor((maxLen - selectedText.length) / 2);
-    const start = Math.max(0, selIndex - half);
-    const end = Math.min(fullText.length, selIndex + selectedText.length + half);
-
-    let context = '';
-    if (start > 0) context += '...';
-    context += fullText.substring(start, end);
-    if (end < fullText.length) context += '...';
-
-    return context;
+  function truncateContext(full, target) {
+    const max = 2000;
+    if (full.length <= max) return full;
+    const idx = full.indexOf(target);
+    if (idx === -1) return full.slice(0, max) + '...';
+    const half = Math.floor((max - target.length) / 2);
+    const s = Math.max(0, idx - half);
+    const e = Math.min(full.length, idx + target.length + half);
+    return (s > 0 ? '...' : '') + full.slice(s, e) + (e < full.length ? '...' : '');
   }
-
-  // 获取选区的屏幕位置
-  function getSelectionRect(selection) {
+  // fixed宿主仅使用视口坐标，移除scroll叠加
+  function getSelectionRect(sel) {
     try {
-      if (selection.rangeCount === 0) return null;
-      const range = selection.getRangeAt(0);
-      // 获取选区末尾位置（弹窗出现在选区下方）
-      const rect = range.getBoundingClientRect();
-      if (!rect || (rect.width === 0 && rect.height === 0)) return null;
-
+      if (sel.rangeCount === 0) return null;
+      const r = sel.getRangeAt(0).getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) return null;
       return {
-        left: rect.left + window.scrollX,
-        top: rect.bottom + window.scrollY + 8,
-        right: rect.right + window.scrollX,
-        bottom: rect.bottom + window.scrollY,
-        width: rect.width,
-        selectionTop: rect.top + window.scrollY
+        left: r.left,
+        top: r.bottom + 8,
+        right: r.right,
+        bottom: r.bottom,
+        width: r.width,
+        selectionTop: r.top
       };
-    } catch (e) {
-      return null;
-    }
+    } catch { return null; }
   }
 
-  // ---- 弹窗管理 ----
+  // ---- 弹窗创建渲染 ----
   function showPopup(selectionRect, mode) {
-    // 先销毁旧弹窗
     destroyPopup();
-
-    // ---- 遮罩层：覆盖整个视口，点击即关闭弹窗（100% 可靠，不依赖事件传播） ----
+    // 全屏遮罩层 补充pointer-events/透明背景
     const backdrop = document.createElement('div');
     backdrop.id = 'explainer-backdrop';
-    backdrop.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:2147483646;';
-    // 使用 click 而非 mousedown，避免与输入框点击时序冲突
+    backdrop.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:auto;background:transparent;';
+    // 【核心修复】遮罩点击使用坐标判断，彻底规避ShadowDOM事件路径bug
     backdrop.addEventListener('click', (e) => {
-      console.log('[DEBUG] 遮罩触发关闭', e.composedPath().map(el => el.tagName || el.nodeType));
-      if (STATE.popupEl && STATE.popupEl.isConnected && e.composedPath().includes(STATE.popupEl)) return;
+      console.log('[DEBUG] 遮罩点击坐标', e.clientX, e.clientY);
+      if (isMouseOverPopup(e.clientX, e.clientY)) return;
       destroyPopup();
     });
     document.body.appendChild(backdrop);
 
-    // ---- 弹窗宿主（在遮罩层之上，定位由 positionPopup 设置） ----
+    // 外层定位宿主（唯一固定定位容器，拖拽只移动它，完全包裹无透明区域）
     const host = document.createElement('div');
     host.id = 'word-explainer-host';
-    host.style.cssText = 'position:fixed;z-index:2147483647;';
+    host.style.cssText = 'position:fixed;z-index:2147483647;width:420px;max-height:500px;';
     document.body.appendChild(host);
 
-    // 使用 Shadow DOM 隔离样式
     const shadow = host.attachShadow({ mode: 'open' });
     STATE.shadowRoot = shadow;
+    STATE.popupEl = host;
 
-    // 注入样式
     const style = document.createElement('style');
     style.textContent = getPopupStyles();
     shadow.appendChild(style);
 
-    // 创建弹窗 HTML
-    const popup = document.createElement('div');
-    popup.className = 'explainer-popup';
-    popup.setAttribute('role', 'dialog');
-    popup.setAttribute('aria-label', '划词解读');
+    const popupInner = document.createElement('div');
+    popupInner.className = 'explainer-popup';
+    popupInner.setAttribute('role', 'dialog');
+    popupInner.setAttribute('aria-label', '划词解读');
+    STATE.popupInner = popupInner;
 
-    popup.innerHTML = `
+    popupInner.innerHTML = `
       <div class="explainer-header">
         <span class="explainer-title">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -378,27 +281,14 @@
       </div>
       <div class="explainer-selected-text">
         <span class="explainer-label">选中内容:</span>
-        <span class="explainer-selected-content">${escapeHtml(STATE.selectedText.length > 100
-          ? STATE.selectedText.substring(0, 100) + '...'
-          : STATE.selectedText)}</span>
+        <span class="explainer-selected-content">${escapeHtml(STATE.selectedText.length > 100 ? STATE.selectedText.slice(0, 100) + '...' : STATE.selectedText)}</span>
       </div>
       <div class="explainer-body" id="explainer-body">
-        ${mode === 'loading' ? `
-          <div class="explainer-loading">
-            <div class="explainer-spinner"></div>
-            <span>正在解读...</span>
-          </div>
-        ` : ''}
+        ${mode === 'loading' ? `<div class="explainer-loading"><div class="explainer-spinner"></div><span>正在解读...</span></div>` : ''}
       </div>
       <div class="explainer-footer">
         <div class="explainer-input-wrapper">
-          <textarea
-            id="explainer-input"
-            class="explainer-input"
-            placeholder="继续提问..."
-            rows="1"
-            aria-label="输入追问内容"
-          ></textarea>
+          <textarea id="explainer-input" class="explainer-input" placeholder="继续提问..." rows="1" aria-label="输入追问内容"></textarea>
           <button class="explainer-btn-send" id="explainer-btn-send" title="发送" aria-label="发送">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
               <path d="M14.854.146a.5.5 0 01.111.54l-5 13a.5.5 0 01-.911.06L5.854 8 1.254 4.946a.5.5 0 01.06-.91l13-5a.5.5 0 01.54.11zM6.296 8.146l2.176 4.06L12.382 2.5 6.296 8.146zM2.5 4.118l3.157 2.052 4.943-4.943L2.5 4.118z" fill="currentColor"/>
@@ -407,356 +297,249 @@
         </div>
       </div>
     `;
+    shadow.appendChild(popupInner);
 
-    shadow.appendChild(popup);
-    STATE.popupEl = host;
+    // 兜底捕获拦截，所有弹窗内交互事件阻断向外传播
+    popupInner.addEventListener('click', e => e.stopPropagation(), true);
+    popupInner.addEventListener('mousedown', e => e.stopPropagation(), true);
+    popupInner.addEventListener('mouseup', e => e.stopPropagation(), true);
 
-    // 弹窗根节点事件阻断：同时阻止冒泡和同层其他监听
-    popup.addEventListener('mousedown', (e) => {
-      e.stopPropagation();
-      e.stopImmediatePropagation();
-    });
-    popup.addEventListener('mouseup', (e) => {
-      e.stopPropagation();
-      e.stopImmediatePropagation();
-    });
+    positionPopup(host, selectionRect);
+    bindPopupEvents(shadow);
 
-    // 定位弹窗
-    positionPopup(popup, selectionRect);
-
-    // 绑定事件
-    bindPopupEvents(shadow, selectionRect);
-
-    // 遮罩层已处理外部点击关闭，无需额外监听
-
-    // 自动聚焦输入框
     setTimeout(() => {
       const input = shadow.getElementById('explainer-input');
       if (input) input.focus();
     }, 300);
   }
 
-  function updatePopupContent(explanationHtml) {
-    if (!STATE.shadowRoot) return;
+  // 弹窗定位：仅操作外层fixed host，视口坐标无scroll
+  function positionPopup(host, rect) {
+    const w = 420;
+    const maxH = 500;
+    const margin = 16;
+    let left = rect.left;
+    let top = rect.top;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
 
-    const body = STATE.shadowRoot.getElementById('explainer-body');
-    if (!body) return;
+    if (left + w > vw - margin) left = Math.max(margin, vw - w - margin);
+    if (left < margin) left = margin;
 
-    // 将 markdown 风格的文本转为 HTML
-    const formatted = formatTextToHtml(explanationHtml);
-
-    body.innerHTML = `
-      <div class="explainer-message explainer-message-assistant">
-        <div class="explainer-bubble">${formatted}</div>
-      </div>
-    `;
-
-    // 滚动到底部
-    body.scrollTop = body.scrollHeight;
+    const bottomViewport = rect.top;
+    const topViewport = rect.selectionTop || bottomViewport - 30;
+    if (bottomViewport + maxH + margin < vh) {
+      top = rect.top;
+    } else if (topViewport - maxH - margin > 0) {
+      top = topViewport - maxH - 8;
+    } else {
+      top = Math.max(margin, (vh - maxH) / 2);
+    }
+    host.style.left = left + 'px';
+    host.style.top = top + 'px';
+    host.style.width = w + 'px';
+    host.style.maxHeight = Math.min(maxH, vh - margin * 2) + 'px';
   }
 
+  function updatePopupContent(text) {
+    if (!STATE.shadowRoot) return;
+    const body = STATE.shadowRoot.getElementById('explainer-body');
+    body.innerHTML = `<div class="explainer-message explainer-message-assistant"><div class="explainer-bubble">${formatTextToHtml(text)}</div></div>`;
+    body.scrollTop = body.scrollHeight;
+  }
   function appendUserMessage(text) {
     if (!STATE.shadowRoot) return;
     const body = STATE.shadowRoot.getElementById('explainer-body');
-    if (!body) return;
-
-    const msgDiv = document.createElement('div');
-    msgDiv.className = 'explainer-message explainer-message-user';
-    msgDiv.innerHTML = `<div class="explainer-bubble">${escapeHtml(text)}</div>`;
-    body.appendChild(msgDiv);
+    const div = document.createElement('div');
+    div.className = 'explainer-message explainer-message-user';
+    div.innerHTML = `<div class="explainer-bubble">${escapeHtml(text)}</div>`;
+    body.appendChild(div);
     body.scrollTop = body.scrollHeight;
   }
-
   function appendAssistantMessage(text) {
     if (!STATE.shadowRoot) return;
     const body = STATE.shadowRoot.getElementById('explainer-body');
-    if (!body) return;
-
-    const formatted = formatTextToHtml(text);
-    const msgDiv = document.createElement('div');
-    msgDiv.className = 'explainer-message explainer-message-assistant';
-    msgDiv.innerHTML = `<div class="explainer-bubble">${formatted}</div>`;
-    body.appendChild(msgDiv);
+    const div = document.createElement('div');
+    div.className = 'explainer-message explainer-message-assistant';
+    div.innerHTML = `<div class="explainer-bubble">${formatTextToHtml(text)}</div>`;
+    body.appendChild(div);
     body.scrollTop = body.scrollHeight;
   }
-
   function appendLoadingMessage() {
     if (!STATE.shadowRoot) return;
     const body = STATE.shadowRoot.getElementById('explainer-body');
-    if (!body) return;
-
-    const loadingId = 'explainer-loading-' + Date.now();
-    const loadingDiv = document.createElement('div');
-    loadingDiv.className = 'explainer-message explainer-message-assistant';
-    loadingDiv.id = loadingId;
-    loadingDiv.innerHTML = `
-      <div class="explainer-bubble">
-        <div class="explainer-loading-inline">
-          <div class="explainer-spinner explainer-spinner-sm"></div>
-          <span>思考中...</span>
-        </div>
-      </div>
-    `;
-    body.appendChild(loadingDiv);
+    const id = 'load-' + Date.now();
+    const div = document.createElement('div');
+    div.className = 'explainer-message explainer-message-assistant';
+    div.id = id;
+    div.innerHTML = `<div class="explainer-bubble"><div class="explainer-loading-inline"><div class="explainer-spinner explainer-spinner-sm"></div><span>思考中...</span></div></div>`;
+    body.appendChild(div);
     body.scrollTop = body.scrollHeight;
-    return loadingId;
+    return id;
   }
-
-  function removeLoadingMessage(loadingId) {
-    if (!STATE.shadowRoot || !loadingId) return;
-    const el = STATE.shadowRoot.getElementById(loadingId);
+  function removeLoadingMessage(id) {
+    if (!STATE.shadowRoot || !id) return;
+    const el = STATE.shadowRoot.getElementById(id);
     if (el) el.remove();
   }
 
-  function positionPopup(popup, selectionRect) {
-    const popupWidth = 420;
-    const popupMaxHeight = 500;
-    const margin = 16;
-
-    let left = selectionRect.left;
-    let top = selectionRect.top;
-
-    // 水平方向调整，确保不超出视口
-    const viewportWidth = window.innerWidth;
-    if (left + popupWidth > viewportWidth - margin) {
-      left = Math.max(margin, viewportWidth - popupWidth - margin);
-    }
-    if (left < margin) {
-      left = margin;
-    }
-
-    // 垂直方向：优先显示在选区下方
-    const viewportHeight = window.innerHeight;
-    const selectionBottom = selectionRect.top - window.scrollY; // 转为视口坐标
-    const selectionTop = selectionRect.selectionTop - window.scrollY || selectionBottom - 30;
-
-    if (selectionBottom + popupMaxHeight + margin < viewportHeight) {
-      // 下方有空间
-      top = selectionRect.top;
-    } else if (selectionTop - popupMaxHeight - margin > 0) {
-      // 上方有空间
-      top = selectionRect.selectionTop - popupMaxHeight - 8;
-    } else {
-      // 居中显示
-      top = Math.max(margin, (viewportHeight - popupMaxHeight) / 2 + window.scrollY);
-    }
-
-    // 将定位设置在宿主上（而非 Shadow DOM 内的 popup），确保宿主覆盖弹窗区域
-    popup.style.left = left + 'px';
-    popup.style.top = top + 'px';
-    popup.style.width = popupWidth + 'px';
-    popup.style.maxHeight = Math.min(popupMaxHeight, viewportHeight - margin * 2) + 'px';
-  }
-
+  // 幂等销毁，同步重置拖拽状态
   function destroyPopup() {
     console.log('[DEBUG] 执行销毁弹窗');
-    // 已销毁或 DOM 已移除，直接返回防止重复执行
+    const backdrop = document.getElementById('explainer-backdrop');
+    STATE.isDragging = false;
     if (!STATE.popupEl || !STATE.popupEl.isConnected) {
       STATE.popupEl = null;
       STATE.shadowRoot = null;
-      const backdrop = document.getElementById('explainer-backdrop');
+      STATE.popupInner = null;
       if (backdrop) backdrop.remove();
       return;
     }
-
     STATE.popupEl.remove();
     STATE.popupEl = null;
     STATE.shadowRoot = null;
-    const backdrop = document.getElementById('explainer-backdrop');
+    STATE.popupInner = null;
     if (backdrop) backdrop.remove();
   }
 
-  // ---- 弹窗事件绑定 ----
-  function bindPopupEvents(shadow, selectionRect) {
-    const popup = shadow.querySelector('.explainer-popup');
+  // 弹窗内部事件绑定：拖拽仅移动host，动态注册销毁监听防泄漏
+  function bindPopupEvents(shadow) {
+    const popupInner = shadow.querySelector('.explainer-popup');
     const closeBtn = shadow.getElementById('explainer-btn-close');
     const clearBtn = shadow.getElementById('explainer-btn-clear');
     const sendBtn = shadow.getElementById('explainer-btn-send');
     const inputEl = shadow.getElementById('explainer-input');
     const header = shadow.querySelector('.explainer-header');
+    const getHost = () => popupInner.getRootNode().host;
 
-    // 关闭按钮
     closeBtn.addEventListener('click', destroyPopup);
 
-    // 清空对话按钮（重置为初始解释）
     clearBtn.addEventListener('click', async () => {
       STATE.conversationMessages = [];
       const body = shadow.getElementById('explainer-body');
-      body.innerHTML = `
-        <div class="explainer-loading">
-          <div class="explainer-spinner"></div>
-          <span>正在重新解读...</span>
-        </div>
-      `;
-
+      body.innerHTML = `<div class="explainer-loading"><div class="explainer-spinner"></div><span>重新解读...</span></div>`;
       try {
-        const response = await safeSendMessage({
+        const res = await safeSendMessage({
           type: 'EXPLAIN',
-          payload: {
-            selectedText: STATE.selectedText,
-            contextText: STATE.contextText,
-            conversationHistory: []
-          }
+          payload: { selectedText: STATE.selectedText, contextText: STATE.contextText, conversationHistory: [] }
         });
-        if (response.success) {
-          STATE.systemPrompt = response.data.systemPrompt;
-          STATE.conversationMessages = response.data.messages.filter(m => m.role !== 'system');
-          updatePopupContent(response.data.explanation);
-        } else {
-          updatePopupContent(`❌ 错误: ${response.error}`);
-        }
-      } catch (error) {
-        updatePopupContent(formatError(error));
-      }
+        if (res.success) {
+          STATE.systemPrompt = res.data.systemPrompt;
+          STATE.conversationMessages = res.data.messages.filter(m => m.role !== 'system');
+          updatePopupContent(res.data.explanation);
+        } else updatePopupContent(`❌ ${res.error}`);
+      } catch (err) updatePopupContent(formatError(err));
     });
 
-    // 发送消息
     async function sendMessage() {
       const text = inputEl.value.trim();
       if (!text || STATE.isProcessing) return;
-
       STATE.isProcessing = true;
       inputEl.value = '';
       inputEl.style.height = 'auto';
-
-      // 显示用户消息
       appendUserMessage(text);
-
-      // 添加到对话历史
       STATE.conversationMessages.push({ role: 'user', content: text });
-
-      // 显示加载状态
-      const loadingId = appendLoadingMessage();
-
+      const loadId = appendLoadingMessage();
       try {
-        const response = await safeSendMessage({
+        const res = await safeSendMessage({
           type: 'CHAT',
-          payload: {
-            messages: STATE.conversationMessages,
-            systemPrompt: STATE.systemPrompt
-          }
+          payload: { messages: STATE.conversationMessages, systemPrompt: STATE.systemPrompt }
         });
-
-        removeLoadingMessage(loadingId);
-
-        if (response.success) {
-          STATE.conversationMessages.push({ role: 'assistant', content: response.data.reply });
-          appendAssistantMessage(response.data.reply);
-        } else {
-          appendAssistantMessage(`❌ 错误: ${response.error}`);
-        }
-      } catch (error) {
-        removeLoadingMessage(loadingId);
-        appendAssistantMessage(formatError(error));
+        removeLoadingMessage(loadId);
+        if (res.success) {
+          STATE.conversationMessages.push({ role: 'assistant', content: res.data.reply });
+          appendAssistantMessage(res.data.reply);
+        } else appendAssistantMessage(`❌ ${res.error}`);
+      } catch (err) {
+        removeLoadingMessage(loadId);
+        appendAssistantMessage(formatError(err));
       } finally {
         STATE.isProcessing = false;
         inputEl.focus();
       }
     }
-
     sendBtn.addEventListener('click', sendMessage);
-
-    // 回车发送（Shift+Enter 换行）
-    inputEl.addEventListener('keydown', (e) => {
+    inputEl.addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
+        e.stopPropagation();
         sendMessage();
       }
     });
-
-    // 自动调整输入框高度
     inputEl.addEventListener('input', () => {
       inputEl.style.height = 'auto';
       inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
     });
 
-    // ---- 拖拽功能（全局监听避免 shadow 内部事件丢失） ----
-    let isDragging = false;
-    let dragStartX, dragStartY, popupStartLeft, popupStartTop;
-
-    header.addEventListener('mousedown', (e) => {
+    // 拖拽动态监听，松开立即移除
+    let dragMoveHandler, dragUpHandler;
+    header.addEventListener('mousedown', e => {
       if (e.target.closest('button')) return;
-
-      isDragging = true;
-      const popupRect = popup.getBoundingClientRect();
-      dragStartX = e.clientX;
-      dragStartY = e.clientY;
-      popupStartLeft = popupRect.left;
-      popupStartTop = popupRect.top;
-
-      popup.style.transition = 'none';
+      STATE.isDragging = true;
+      const host = getHost();
+      const rect = host.getBoundingClientRect();
+      const dragStartX = e.clientX;
+      const dragStartY = e.clientY;
+      const hostStartLeft = rect.left;
+      const hostStartTop = rect.top;
+      popupInner.style.transition = 'none';
       header.style.cursor = 'grabbing';
       e.preventDefault();
-    });
+      e.stopPropagation();
 
-    document.addEventListener('mousemove', (e) => {
-      if (!isDragging) return;
-      const dx = e.clientX - dragStartX;
-      const dy = e.clientY - dragStartY;
-      popup.style.left = (popupStartLeft + dx) + 'px';
-      popup.style.top = (popupStartTop + dy) + 'px';
-    });
-
-    document.addEventListener('mouseup', () => {
-      if (!isDragging || !STATE.popupEl) return;
-      isDragging = false;
-      popup.style.transition = '';
-      header.style.cursor = '';
+      dragMoveHandler = evt => {
+        if (!STATE.isDragging) return;
+        const dx = evt.clientX - dragStartX;
+        const dy = evt.clientY - dragStartY;
+        host.style.left = (hostStartLeft + dx) + 'px';
+        host.style.top = (hostStartTop + dy) + 'px';
+      };
+      dragUpHandler = () => {
+        STATE.isDragging = false;
+        popupInner.style.transition = '';
+        header.style.cursor = '';
+        document.removeEventListener('mousemove', dragMoveHandler);
+        document.removeEventListener('mouseup', dragUpHandler);
+      };
+      document.addEventListener('mousemove', dragMoveHandler);
+      document.addEventListener('mouseup', dragUpHandler);
     });
   }
 
-  // ---- 工具函数 ----
+  // 工具函数
   function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
   }
-
-  // 将文本格式化为 HTML（处理 markdown 风格）
   function formatTextToHtml(text) {
     let html = escapeHtml(text);
-
-    // 处理加粗 **text**
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-
-    // 处理行内代码 `code`
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-    // 处理换行
     html = html.replace(/\n\n/g, '</p><p>');
     html = html.replace(/\n/g, '<br>');
     html = '<p>' + html + '</p>';
-
-    // 处理 markdown 列表
     html = html.replace(/<p>- /g, '<p>• ');
-    html = html.replace(/<p>\d+\. /g, (match) => {
-      return match.replace(/<p>/, '<p>');
-    });
-
-    // 清理空段落
     html = html.replace(/<p><\/p>/g, '<p><br></p>');
-
     return html;
   }
 
-  // ---- 弹窗样式（注入到 Shadow DOM） ----
+  // 样式：host固定420宽，无透明漏空；弹窗relative完全填充host
   function getPopupStyles() {
     return `
-      :host {
-        all: initial;
-      }
-
+      :host { all: initial; }
       .explainer-popup {
-        position: fixed;
-        width: 420px;
-        max-height: 500px;
+        position: relative;
+        width: 100%;
+        height: 100%;
+        max-height: unset;
         background: #ffffff;
         border: 1px solid #e0e0e0;
         border-radius: 12px;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15), 0 2px 8px rgba(0, 0, 0, 0.08);
+        box-shadow: 0 8px 32px rgba(0,0,0,0.15),0 2px 8px rgba(0,0,0,0.08);
         display: flex;
         flex-direction: column;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+        font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica Neue,Arial,sans-serif;
         font-size: 14px;
         color: #1a1a1a;
         line-height: 1.6;
@@ -764,13 +547,7 @@
         animation: explainerFadeIn 0.2s ease-out;
         user-select: text;
       }
-
-      @keyframes explainerFadeIn {
-        from { opacity: 0; transform: translateY(8px); }
-        to   { opacity: 1; transform: translateY(0); }
-      }
-
-      /* ---- 头部 ---- */
+      @keyframes explainerFadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
       .explainer-header {
         display: flex;
         align-items: center;
@@ -783,266 +560,51 @@
         background: #fafafa;
         border-radius: 12px 12px 0 0;
       }
-      .explainer-header:active {
-        cursor: grabbing;
-      }
-      .explainer-title {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 13px;
-        font-weight: 600;
-        color: #333;
-      }
-      .explainer-header-actions {
-        display: flex;
-        gap: 4px;
-      }
-
-      /* ---- 按钮 ---- */
-      .explainer-btn-icon {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 28px;
-        height: 28px;
-        border: none;
-        background: transparent;
-        border-radius: 6px;
-        cursor: pointer;
-        color: #666;
-        transition: background 0.15s, color 0.15s;
-      }
-      .explainer-btn-icon:hover {
-        background: #e8e8e8;
-        color: #333;
-      }
-      .explainer-btn-send {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 32px;
-        height: 32px;
-        border: none;
-        background: #2563eb;
-        color: #fff;
-        border-radius: 8px;
-        cursor: pointer;
-        flex-shrink: 0;
-        transition: background 0.15s;
-      }
-      .explainer-btn-send:hover {
-        background: #1d4ed8;
-      }
-      .explainer-btn-send:disabled {
-        background: #a5b4fc;
-        cursor: not-allowed;
-      }
-
-      /* ---- 选中文本展示 ---- */
-      .explainer-selected-text {
-        padding: 8px 14px;
-        background: #f0f7ff;
-        border-bottom: 1px solid #dbeafe;
-        font-size: 12px;
-        flex-shrink: 0;
-      }
-      .explainer-label {
-        color: #6b7280;
-        margin-right: 4px;
-      }
-      .explainer-selected-content {
-        color: #1e40af;
-        font-weight: 500;
-        font-style: italic;
-      }
-
-      /* ---- 对话主体 ---- */
-      .explainer-body {
-        flex: 1;
-        overflow-y: auto;
-        padding: 14px;
-        min-height: 60px;
-        max-height: 350px;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-      }
-      .explainer-body::-webkit-scrollbar {
-        width: 6px;
-      }
-      .explainer-body::-webkit-scrollbar-thumb {
-        background: #d0d0d0;
-        border-radius: 3px;
-      }
-      .explainer-body::-webkit-scrollbar-track {
-        background: transparent;
-      }
-
-      /* ---- 消息气泡 ---- */
-      .explainer-message {
-        display: flex;
-        flex-direction: column;
-        animation: explainerFadeIn 0.2s ease-out;
-      }
-      .explainer-message-user .explainer-bubble {
-        align-self: flex-end;
-        background: #2563eb;
-        color: #fff;
-        border-radius: 12px 12px 4px 12px;
-        padding: 8px 14px;
-        max-width: 85%;
-      }
-      .explainer-message-assistant .explainer-bubble {
-        align-self: flex-start;
-        background: #f3f4f6;
-        color: #1a1a1a;
-        border-radius: 12px 12px 12px 4px;
-        padding: 10px 14px;
-        max-width: 100%;
-        line-height: 1.7;
-      }
-      .explainer-bubble p {
-        margin: 0 0 6px 0;
-      }
-      .explainer-bubble p:last-child {
-        margin-bottom: 0;
-      }
-      .explainer-bubble strong {
-        color: #1e40af;
-        font-weight: 600;
-      }
-      .explainer-bubble code {
-        background: rgba(0,0,0,0.06);
-        padding: 2px 6px;
-        border-radius: 4px;
-        font-family: "SF Mono", "Fira Code", "Fira Mono", monospace;
-        font-size: 0.9em;
-      }
-
-      /* ---- 加载动画 ---- */
-      .explainer-loading {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 10px;
-        padding: 24px;
-        color: #9ca3af;
-        font-size: 13px;
-      }
-      .explainer-loading-inline {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-      .explainer-spinner {
-        width: 20px;
-        height: 20px;
-        border: 2.5px solid #e5e7eb;
-        border-top-color: #2563eb;
-        border-radius: 50%;
-        animation: explainerSpin 0.7s linear infinite;
-      }
-      .explainer-spinner-sm {
-        width: 14px;
-        height: 14px;
-        border-width: 2px;
-      }
-      @keyframes explainerSpin {
-        to { transform: rotate(360deg); }
-      }
-
-      /* ---- 底部输入 ---- */
-      .explainer-footer {
-        padding: 10px 14px;
-        border-top: 1px solid #f0f0f0;
-        flex-shrink: 0;
-        background: #fafafa;
-        border-radius: 0 0 12px 12px;
-      }
-      .explainer-input-wrapper {
-        display: flex;
-        align-items: flex-end;
-        gap: 8px;
-      }
-      .explainer-input {
-        flex: 1;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        padding: 8px 12px;
-        font-size: 13px;
-        font-family: inherit;
-        resize: none;
-        outline: none;
-        line-height: 1.4;
-        max-height: 120px;
-        transition: border-color 0.15s;
-        background: #fff;
-        color: #1a1a1a;
-      }
-      .explainer-input:focus {
-        border-color: #2563eb;
-        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
-      }
-      .explainer-input::placeholder {
-        color: #c0c0c0;
-      }
-
-      /* ---- 暗色模式适配 ---- */
+      .explainer-header:active { cursor: grabbing; }
+      .explainer-title { display: flex; align-items: center; gap:6px; font-size:13px; font-weight:600; color:#333; }
+      .explainer-header-actions { display: flex; gap:4px; }
+      .explainer-btn-icon { width:28px;height:28px;border:none;background:transparent;border-radius:6px;cursor:pointer;color:#666;display:flex;align-items:center;justify-content:center;transition:0.15s; }
+      .explainer-btn-icon:hover { background:#e8e8e8;color:#333; }
+      .explainer-btn-send { width:32px;height:32px;border:none;background:#2563eb;color:#fff;border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:0.15s; }
+      .explainer-btn-send:hover { background:#1d4ed8; }
+      .explainer-selected-text { padding:8px 14px;background:#f0f7ff;border-bottom:1px solid #dbeafe;font-size:12px;flex-shrink:0; }
+      .explainer-label { color:#6b7280;margin-right:4px; }
+      .explainer-selected-content { color:#1e40af;font-weight:500;font-style:italic; }
+      .explainer-body { flex:1;overflow-y:auto;padding:14px;min-height:60px;max-height:350px;display:flex;flex-direction:column;gap:10px; }
+      .explainer-body::-webkit-scrollbar { width:6px; }
+      .explainer-body::-webkit-scrollbar-thumb { background:#d0d0d0;border-radius:3px; }
+      .explainer-message { animation:explainerFadeIn 0.2s ease-out;display:flex;flex-direction:column; }
+      .explainer-message-user .explainer-bubble { align-self:flex-end;background:#2563eb;color:#fff;border-radius:12px 12px 4px 12px;padding:8px 14px;max-width:85%; }
+      .explainer-message-assistant .explainer-bubble { align-self:flex-start;background:#f3f4f6;color:#1a1a1a;border-radius:12px 12px 12px 4px;padding:10px 14px;max-width:100%;line-height:1.7; }
+      .explainer-bubble p { margin:0 0 6px 0; }
+      .explainer-bubble p:last-child { margin-bottom:0; }
+      .explainer-bubble strong { color:#1e40af;font-weight:600; }
+      .explainer-bubble code { background:rgba(0,0,0,0.06);padding:2px 6px;border-radius:4px;font-family:SF Mono,Fira Code,monospace;font-size:0.9em; }
+      .explainer-loading { display:flex;align-items:center;justify-content:center;gap:10px;padding:24px;color:#9ca3af;font-size:13px; }
+      .explainer-loading-inline { display:flex;align-items:center;gap:8px; }
+      .explainer-spinner { width:20px;height:20px;border:2.5px solid #e5e7eb;border-top-color:#2563eb;border-radius:50%;animation:spin 0.7s linear infinite; }
+      .explainer-spinner-sm { width:14px;height:14px;border-width:2px; }
+      @keyframes spin { to { transform:rotate(360deg); } }
+      .explainer-footer { padding:10px 14px;border-top:1px solid #f0f0f0;flex-shrink:0;background:#fafafa;border-radius:0 0 12px 12px; }
+      .explainer-input-wrapper { display:flex;align-items:flex-end;gap:8px; }
+      .explainer-input { flex:1;border:1px solid #e5e7eb;border-radius:8px;padding:8px 12px;font-size:13px;font-family:inherit;resize:none;outline:none;line-height:1.4;max-height:120px;background:#fff;color:#1a1a1a;transition:0.15s; }
+      .explainer-input:focus { border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,0.1); }
+      .explainer-input::placeholder { color:#c0c0c0; }
       @media (prefers-color-scheme: dark) {
-        .explainer-popup {
-          background: #1e1e1e;
-          border-color: #3a3a3a;
-          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-          color: #e0e0e0;
-        }
-        .explainer-header {
-          background: #252525;
-          border-bottom-color: #3a3a3a;
-        }
-        .explainer-title {
-          color: #e0e0e0;
-        }
-        .explainer-btn-icon {
-          color: #999;
-        }
-        .explainer-btn-icon:hover {
-          background: #3a3a3a;
-          color: #e0e0e0;
-        }
-        .explainer-selected-text {
-          background: #1a2744;
-          border-bottom-color: #2a3a5c;
-        }
-        .explainer-selected-content {
-          color: #93c5fd;
-        }
-        .explainer-message-assistant .explainer-bubble {
-          background: #2a2a2a;
-          color: #e0e0e0;
-        }
-        .explainer-bubble strong {
-          color: #93c5fd;
-        }
-        .explainer-bubble code {
-          background: rgba(255,255,255,0.08);
-        }
-        .explainer-input {
-          background: #2a2a2a;
-          border-color: #3a3a3a;
-          color: #e0e0e0;
-        }
-        .explainer-input:focus {
-          border-color: #3b82f6;
-          box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
-        }
-        .explainer-footer {
-          background: #252525;
-          border-top-color: #3a3a3a;
-        }
-        .explainer-body::-webkit-scrollbar-thumb {
-          background: #555;
-        }
+        .explainer-popup { background:#1e1e1e;border-color:#3a3a3a;box-shadow:0 8px 32px rgba(0,0,0,0.4);color:#e0e0e0; }
+        .explainer-header { background:#252525;border-bottom-color:#3a3a3a; }
+        .explainer-title { color:#e0e0e0; }
+        .explainer-btn-icon { color:#999; }
+        .explainer-btn-icon:hover { background:#3a3a3a;color:#e0e0e0; }
+        .explainer-selected-text { background:#1a2744;border-bottom-color:#2a3a5c; }
+        .explainer-selected-content { color:#93c5fd; }
+        .explainer-message-assistant .explainer-bubble { background:#2a2a2a;color:#e0e0e0; }
+        .explainer-bubble strong { color:#93c5fd; }
+        .explainer-bubble code { background:rgba(255,255,255,0.08); }
+        .explainer-input { background:#2a2a2a;border-color:#3a3a3a;color:#e0e0e0; }
+        .explainer-input:focus { border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,0.2); }
+        .explainer-footer { background:#252525;border-top-color:#3a3a3a; }
+        .explainer-body::-webkit-scrollbar-thumb { background:#555; }
       }
     `;
   }
