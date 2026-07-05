@@ -1,10 +1,10 @@
 // ============================================================
-// 划词解读 - Content Script 【修复语法报错+彻底解决点内部误关】
+// 划词解读 - 修复pointer-events阻断交互 + 层级天然区分内外关闭
+// 解决：按钮/输入框/拖拽/滚动全部失效、Shadow坐标判断不准问题
 // ============================================================
 (function () {
   'use strict';
 
-  // ---- 启动自检 ----
   const VERSION = '2.0.1';
   const runtimeReady = typeof chrome !== 'undefined' && chrome.runtime && !!chrome.runtime.id;
   console.log(
@@ -12,47 +12,68 @@
     'color:#2563eb;font-weight:bold', 'color:#666', 'color:#059669', 'color:#888'
   );
   if (!runtimeReady) {
-    console.error('[划词解读] ⚠️ Chrome 扩展运行时未就绪！刷新扩展+页面重试');
+    console.error('[划词解读] ⚠️ Chrome 扩展运行时未就绪！刷新页面重试');
   }
 
-  // ---- 调试工具 ----
   const DBG = (() => {
     const PREFIX = '[划词解读]';
     let _enabled = false;
     try {
       if (chrome && chrome.storage && chrome.storage.local) {
-        chrome.storage.local.get(['debugEnabled'], r => _enabled = !!r.debugEnabled);
+        chrome.storage.local.get(['debugEnabled'], r => {
+          _enabled = !!r.debugEnabled;
+        });
         chrome.storage.onChanged.addListener(changes => {
-          if (changes.debugEnabled) _enabled = !!changes.debugEnabled.newValue;
+          if (changes.debugEnabled) {
+            _enabled = !!changes.debugEnabled.newValue;
+          }
         });
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn(PREFIX, '调试工具初始化异常', e);
+    }
     return {
-      log(tag, ...args) { if (_enabled) console.log(PREFIX, `[${tag}]`, ...args); },
-      warn(tag, ...args) { if (_enabled) console.warn(PREFIX, `[${tag}]`, ...args); },
-      error(tag, ...args) { console.error(PREFIX, `[${tag}]`, ...args); },
-      event(tag, detail) { if (_enabled) console.log(PREFIX, '🔔', tag, detail || ''); }
+      log(tag, ...args) {
+        if (_enabled) {
+          console.log(PREFIX, `[${tag}]`, ...args);
+        }
+      },
+      warn(tag, ...args) {
+        if (_enabled) {
+          console.warn(PREFIX, `[${tag}]`, ...args);
+        }
+      },
+      error(tag, ...args) {
+        console.error(PREFIX, `[${tag}]`, ...args);
+      },
+      event(tag, detail) {
+        if (_enabled) {
+          console.log(PREFIX, '🔔', tag, detail || '');
+        }
+      }
     };
   })();
 
-  // ---- Chrome API 安全封装 ----
   function isRuntimeAvailable() {
     return typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage;
   }
   function safeSendMessage(payload) {
-    if (!isRuntimeAvailable()) throw new Error('扩展运行时未就绪，请刷新页面');
+    if (!isRuntimeAvailable()) {
+      throw new Error('扩展运行时未就绪，请刷新页面');
+    }
     return chrome.runtime.sendMessage(payload);
   }
   function formatError(error) {
     const msg = error.message || String(error);
-    if (msg.includes('Extension context invalidated') || msg.includes('extension context'))
+    if (msg.includes('Extension context invalidated') || msg.includes('extension context')) {
       return '⚠️ 扩展已更新，请刷新页面(F5)';
-    if (msg.includes('Receiving end does not exist') || msg.includes('Could not establish'))
+    }
+    if (msg.includes('Receiving end does not exist') || msg.includes('Could not establish')) {
       return '⚠️ 后台服务断开，刷新扩展+页面';
+    }
     return '❌ ' + msg;
   }
 
-  // ---- 全局状态 ----
   const STATE = {
     ctrlPressed: false,
     altPressed: false,
@@ -67,20 +88,6 @@
     isDragging: false
   };
 
-  // ========== 几何坐标判断鼠标是否在弹窗内 ==========
-  function isMouseOverPopup(clientX, clientY) {
-    if (!STATE.popupEl || !STATE.popupEl.isConnected) return false;
-    const rect = STATE.popupEl.getBoundingClientRect();
-    const padding = 2;
-    return (
-      clientX >= rect.left - padding &&
-      clientX <= rect.right + padding &&
-      clientY >= rect.top - padding &&
-      clientY <= rect.bottom + padding
-    );
-  }
-
-  // ---- 通用工具函数【全部前置，消除标识符未定义报错】 ----
   function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
@@ -99,7 +106,7 @@
   }
   function getPopupStyles() {
     return `
-      :host { all: initial; }
+      :host { all: initial; pointer-events: auto; }
       .explainer-popup {
         position: relative;
         width: 100%;
@@ -181,13 +188,17 @@
     `;
   }
   function updatePopupContent(text) {
-    if (!STATE.shadowRoot) return;
+    if (!STATE.shadowRoot) {
+      return;
+    }
     const body = STATE.shadowRoot.getElementById('explainer-body');
     body.innerHTML = `<div class="explainer-message explainer-message-assistant"><div class="explainer-bubble">${formatTextToHtml(text)}</div></div>`;
     body.scrollTop = body.scrollHeight;
   }
   function appendUserMessage(text) {
-    if (!STATE.shadowRoot) return;
+    if (!STATE.shadowRoot) {
+      return;
+    }
     const body = STATE.shadowRoot.getElementById('explainer-body');
     const div = document.createElement('div');
     div.className = 'explainer-message explainer-message-user';
@@ -196,7 +207,9 @@
     body.scrollTop = body.scrollHeight;
   }
   function appendAssistantMessage(text) {
-    if (!STATE.shadowRoot) return;
+    if (!STATE.shadowRoot) {
+      return;
+    }
     const body = STATE.shadowRoot.getElementById('explainer-body');
     const div = document.createElement('div');
     div.className = 'explainer-message explainer-message-assistant';
@@ -205,7 +218,9 @@
     body.scrollTop = body.scrollHeight;
   }
   function appendLoadingMessage() {
-    if (!STATE.shadowRoot) return;
+    if (!STATE.shadowRoot) {
+      return;
+    }
     const body = STATE.shadowRoot.getElementById('explainer-body');
     const id = 'load-' + Date.now();
     const div = document.createElement('div');
@@ -217,12 +232,15 @@
     return id;
   }
   function removeLoadingMessage(id) {
-    if (!STATE.shadowRoot || !id) return;
+    if (!STATE.shadowRoot || !id) {
+      return;
+    }
     const el = STATE.shadowRoot.getElementById(id);
-    if (el) el.remove();
+    if (el) {
+      el.remove();
+    }
   }
 
-  // ---- 快捷键监听 ----
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Control') {
       STATE.ctrlPressed = true;
@@ -234,7 +252,7 @@
         e.preventDefault();
         if (STATE.ctrlPressed) {
           const sel = window.getSelection();
-          if (sel && sel.toString().trim() && !STATE.isProcessing) {
+          if (sel && sel.toString().trim() && !STATE.isProcessing && !STATE.popupEl) {
             DBG.event('Alt键触发解释', sel.toString().trim().substring(0, 50));
             triggerExplanation();
           }
@@ -242,38 +260,49 @@
       }
       return;
     }
-    if (e.key === 'Escape' && STATE.popupEl) destroyPopup();
+    if (e.key === 'Escape' && STATE.popupEl) {
+      destroyPopup();
+    }
   });
   document.addEventListener('keyup', e => {
-    if (e.key === 'Control') STATE.ctrlPressed = false;
-    if (e.key === 'Alt') STATE.altPressed = false;
+    if (e.key === 'Control') {
+      STATE.ctrlPressed = false;
+    }
+    if (e.key === 'Alt') {
+      STATE.altPressed = false;
+    }
   });
   window.addEventListener('blur', () => {
     STATE.ctrlPressed = false;
     STATE.altPressed = false;
   });
 
-  document.addEventListener('selectionchange', () => {
-    if (STATE.popupEl && STATE.popupEl.isConnected) return;
-  });
-
   document.addEventListener('mouseup', (e) => {
-    if (isMouseOverPopup(e.clientX, e.clientY)) return;
-    if (!STATE.ctrlPressed || !STATE.altPressed || STATE.isProcessing) return;
+    if (STATE.popupEl && STATE.popupEl.isConnected) {
+      return;
+    }
+    if (!STATE.ctrlPressed || !STATE.altPressed || STATE.isProcessing) {
+      return;
+    }
     const sel = window.getSelection();
-    if (!sel || !sel.toString().trim()) return;
+    if (!sel || !sel.toString().trim()) {
+      return;
+    }
     DBG.event('鼠标选择触发', sel.toString().trim().substring(0, 50));
     triggerExplanation();
   });
 
-  // ---- 上下文提取工具 ----
   function extractContext(selection) {
     try {
       const range = selection.getRangeAt(0);
       let container = range.commonAncestorContainer;
-      if (container.nodeType === Node.TEXT_NODE) container = container.parentElement;
+      if (container.nodeType === Node.TEXT_NODE) {
+        container = container.parentElement;
+      }
       const block = findBlockAncestor(container);
-      if (block) return truncateContext(block.textContent || '', STATE.selectedText);
+      if (block) {
+        return truncateContext(block.textContent || '', STATE.selectedText);
+      }
       const node = range.startContainer;
       if (node.nodeType === Node.TEXT_NODE) {
         const text = node.textContent;
@@ -290,16 +319,22 @@
     const blockTags = ['P', 'DIV', 'ARTICLE', 'SECTION', 'BLOCKQUOTE', 'LI', 'TD', 'TH', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'PRE', 'ASIDE', 'MAIN', 'BODY'];
     let cur = el;
     while (cur && cur !== document.body && cur !== document.documentElement) {
-      if (blockTags.includes(cur.tagName) && (cur.textContent || '').length > STATE.selectedText.length) return cur;
+      if (blockTags.includes(cur.tagName) && (cur.textContent || '').length > STATE.selectedText.length) {
+        return cur;
+      }
       cur = cur.parentElement;
     }
     return null;
   }
   function truncateContext(full, target) {
     const max = 2000;
-    if (full.length <= max) return full;
+    if (full.length <= max) {
+      return full;
+    }
     const idx = full.indexOf(target);
-    if (idx === -1) return full.slice(0, max) + '...';
+    if (idx === -1) {
+      return full.slice(0, max) + '...';
+    }
     const half = Math.floor((max - target.length) / 2);
     const s = Math.max(0, idx - half);
     const e = Math.min(full.length, idx + target.length + half);
@@ -307,9 +342,13 @@
   }
   function getSelectionRect(sel) {
     try {
-      if (sel.rangeCount === 0) return null;
+      if (sel.rangeCount === 0) {
+        return null;
+      }
       const r = sel.getRangeAt(0).getBoundingClientRect();
-      if (r.width === 0 && r.height === 0) return null;
+      if (r.width === 0 && r.height === 0) {
+        return null;
+      }
       return {
         left: r.left,
         top: r.bottom + 8,
@@ -318,15 +357,20 @@
         width: r.width,
         selectionTop: r.top
       };
-    } catch { return null; }
+    } catch {
+      return null;
+    }
   }
 
-  // ---- 核心解释逻辑 ----
   async function triggerExplanation() {
-    if (STATE.isProcessing) return;
+    if (STATE.isProcessing) {
+      return;
+    }
     const sel = window.getSelection();
     const selectedText = sel.toString().trim();
-    if (!selectedText) return;
+    if (!selectedText) {
+      return;
+    }
 
     STATE.isProcessing = true;
     STATE.selectedText = selectedText;
@@ -337,7 +381,10 @@
     DBG.log('Context', '选中片段', selectedText.substring(0, 50), '上下文长度', contextText.length);
 
     const rect = getSelectionRect(sel);
-    if (!rect) { STATE.isProcessing = false; return; }
+    if (!rect) {
+      STATE.isProcessing = false;
+      return;
+    }
     showPopup(rect, 'loading');
 
     try {
@@ -349,7 +396,6 @@
         STATE.systemPrompt = res.data.systemPrompt;
         STATE.conversationMessages = res.data.messages.filter(m => m.role !== 'system');
         updatePopupContent(res.data.explanation);
-        DBG.log('Explain', '解释完成，文本长度', res.data.explanation.length);
       } else {
         updatePopupContent(`❌ 解释失败：${res.error}`);
       }
@@ -361,33 +407,36 @@
     }
   }
 
-  // 弹窗定位
   function positionPopup(host, rect) {
-    const popupWidth = 420;
-    const popupMaxHeight = 500;
+    const w = 420;
+    const maxH = 500;
     const margin = 16;
     let left = rect.left;
     let top = rect.top;
-    const viewportWidth = window.innerWidth;
-    if (left + popupWidth > viewportWidth - margin) left = Math.max(margin, viewportWidth - popupWidth - margin);
-    if (left < margin) left = margin;
-    const viewportHeight = window.innerHeight;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    if (left + w > vw - margin) {
+      left = Math.max(margin, vw - w - margin);
+    }
+    if (left < margin) {
+      left = margin;
+    }
     const selectionBottom = rect.top;
     const selectionTop = rect.selectionTop || selectionBottom - 30;
-    if (selectionBottom + popupMaxHeight + margin < viewportHeight) {
+    if (selectionBottom + maxH + margin < vh) {
       top = rect.top;
-    } else if (selectionTop - popupMaxHeight - margin > 0) {
-      top = selectionTop - popupMaxHeight - 8;
+    } else if (selectionTop - maxH - margin > 0) {
+      top = selectionTop - maxH - 8;
     } else {
-      top = Math.max(margin, (viewportHeight - popupMaxHeight) / 2);
+      top = Math.max(margin, (vh - maxH) / 2);
     }
     host.style.left = left + 'px';
     host.style.top = top + 'px';
-    host.style.width = popupWidth + 'px';
-    host.style.maxHeight = Math.min(popupMaxHeight, viewportHeight - margin * 2) + 'px';
+    host.style.width = w + 'px';
+    host.style.maxHeight = Math.min(maxH, vh - margin * 2) + 'px';
   }
 
-  // 幂等销毁弹窗
   function destroyPopup() {
     console.log('[DEBUG] 执行销毁弹窗');
     const backdrop = document.getElementById('explainer-backdrop');
@@ -396,17 +445,20 @@
       STATE.popupEl = null;
       STATE.shadowRoot = null;
       STATE.popupInner = null;
-      if (backdrop) backdrop.remove();
+      if (backdrop) {
+        backdrop.remove();
+      }
       return;
     }
     STATE.popupEl.remove();
     STATE.popupEl = null;
     STATE.shadowRoot = null;
     STATE.popupInner = null;
-    if (backdrop) backdrop.remove();
+    if (backdrop) {
+      backdrop.remove();
+    }
   }
 
-  // 弹窗事件绑定
   function bindPopupEvents(shadow) {
     const popupInner = shadow.querySelector('.explainer-popup');
     const closeBtn = shadow.getElementById('explainer-btn-close');
@@ -430,12 +482,18 @@
           STATE.systemPrompt = res.data.systemPrompt;
           STATE.conversationMessages = res.data.messages.filter(m => m.role !== 'system');
           updatePopupContent(res.data.explanation);
-        } else updatePopupContent(`❌ ${res.error}`);
-      } catch (err) { updatePopupContent(formatError(err)); }
+        } else {
+          updatePopupContent(`❌ ${res.error}`);
+        }
+      } catch (err) {
+        updatePopupContent(formatError(err));
+      }
     });
     async function sendMessage() {
       const text = inputEl.value.trim();
-      if (!text || STATE.isProcessing) return;
+      if (!text || STATE.isProcessing) {
+        return;
+      }
       STATE.isProcessing = true;
       inputEl.value = '';
       inputEl.style.height = 'auto';
@@ -451,7 +509,9 @@
         if (res.success) {
           STATE.conversationMessages.push({ role: 'assistant', content: res.data.reply });
           appendAssistantMessage(res.data.reply);
-        } else appendAssistantMessage(`❌ ${res.error}`);
+        } else {
+          appendAssistantMessage(`❌ ${res.error}`);
+        }
       } catch (err) {
         removeLoadingMessage(loadId);
         appendAssistantMessage(formatError(err));
@@ -464,7 +524,6 @@
     inputEl.addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        e.stopPropagation();
         sendMessage();
       }
     });
@@ -475,7 +534,9 @@
 
     let dragMoveHandler, dragUpHandler;
     header.addEventListener('mousedown', e => {
-      if (e.target.closest('button')) return;
+      if (e.target.closest('button')) {
+        return;
+      }
       STATE.isDragging = true;
       const host = getHost();
       const rect = host.getBoundingClientRect();
@@ -486,9 +547,10 @@
       popupInner.style.transition = 'none';
       header.style.cursor = 'grabbing';
       e.preventDefault();
-      e.stopPropagation();
       dragMoveHandler = evt => {
-        if (!STATE.isDragging) return;
+        if (!STATE.isDragging) {
+          return;
+        }
         const dx = evt.clientX - dragStartX;
         const dy = evt.clientY - dragStartY;
         host.style.left = (hostStartLeft + dx) + 'px';
@@ -506,22 +568,19 @@
     });
   }
 
-  // ---- 弹窗创建渲染 ----
   function showPopup(selectionRect, mode) {
     destroyPopup();
+    // 遮罩层：仅自身接收鼠标，点击空白关闭
     const backdrop = document.createElement('div');
     backdrop.id = 'explainer-backdrop';
-    backdrop.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:auto;background:transparent;';
-    backdrop.addEventListener('click', (e) => {
-      console.log('[DEBUG] 遮罩点击坐标', e.clientX, e.clientY);
-      if (isMouseOverPopup(e.clientX, e.clientY)) return;
-      destroyPopup();
-    });
+    backdrop.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:auto;background:rgba(0,0,0,0.4);';
+    backdrop.addEventListener('mousedown', destroyPopup);
     document.body.appendChild(backdrop);
 
+    // 弹窗外层容器：恢复pointer-events:auto，允许内部所有交互
     const host = document.createElement('div');
     host.id = 'word-explainer-host';
-    host.style.cssText = 'position:fixed;z-index:2147483647;';
+    host.style.cssText = 'position:fixed;z-index:2147483647;width:420px;max-height:500px;pointer-events:auto;';
     document.body.appendChild(host);
 
     const shadow = host.attachShadow({ mode: 'open' });
@@ -578,18 +637,15 @@
       </div>
     `;
     shadow.appendChild(popupInner);
-    STATE.popupEl = host;
-
-    popupInner.addEventListener('click', e => e.stopPropagation(), true);
-    popupInner.addEventListener('mousedown', e => e.stopPropagation(), true);
-    popupInner.addEventListener('mouseup', e => e.stopPropagation(), true);
 
     positionPopup(host, selectionRect);
     bindPopupEvents(shadow);
 
     setTimeout(() => {
       const input = shadow.getElementById('explainer-input');
-      if (input) input.focus();
+      if (input) {
+        input.focus();
+      }
     }, 300);
   }
 })();
