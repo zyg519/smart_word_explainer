@@ -81,7 +81,8 @@
     contextText: '',
     isDragging: false,
     dragOffsetX: 0,
-    dragOffsetY: 0
+    dragOffsetY: 0,
+    clickedInsidePopup: false
   };
 
   // ---- 快捷键 Ctrl+Alt 监听 ----
@@ -110,8 +111,8 @@
       return;
     }
 
-    // Esc 关闭弹窗
-    if (e.key === 'Escape') {
+    // Esc 关闭弹窗（仅当弹窗存在时）
+    if (e.key === 'Escape' && STATE.popupEl) {
       destroyPopup();
     }
   });
@@ -131,21 +132,26 @@
     STATE.altPressed = false;
   });
 
+  // 弹窗存在期间，监听 selectionchange 防止浏览器清空选区导致连锁关闭
+  document.addEventListener('selectionchange', () => {
+    // 弹窗打开时不响应外部选区变化
+    if (STATE.popupEl && STATE.popupEl.isConnected) return;
+  });
+
   // ---- 鼠标选择监听 ----
   document.addEventListener('mouseup', (e) => {
-    // 短暂延迟，确保 selection 已更新
-    setTimeout(() => {
-      if (!STATE.ctrlPressed || !STATE.altPressed || STATE.isProcessing) return;
+    // 弹窗内点击完全拦截，不执行任何后续逻辑（防止关闭/重建弹窗）
+    if (STATE.popupEl && STATE.popupEl.isConnected && e.composedPath().includes(STATE.popupEl)) {
+      return;
+    }
 
-      // 检查点击是否在弹窗内部（弹窗内的选择不触发）
-      if (STATE.popupEl && STATE.popupEl.contains(e.target)) return;
+    if (!STATE.ctrlPressed || !STATE.altPressed || STATE.isProcessing) return;
 
-      const selection = window.getSelection();
-      if (!selection || selection.toString().trim().length === 0) return;
+    const selection = window.getSelection();
+    if (!selection || selection.toString().trim().length === 0) return;
 
-      DBG.event('鼠标选择触发', { selected: selection.toString().trim().substring(0, 50) });
-      triggerExplanation();
-    }, 50);
+    DBG.event('鼠标选择触发', { selected: selection.toString().trim().substring(0, 50) });
+    triggerExplanation();
   });
 
   // ---- 核心：触发解释流程 ----
@@ -316,10 +322,22 @@
     // 先销毁旧弹窗
     destroyPopup();
 
-    // 创建宿主元素（使用 Shadow DOM 宿主 + fixed 定位）
+    // ---- 遮罩层：覆盖整个视口，点击即关闭弹窗（100% 可靠，不依赖事件传播） ----
+    const backdrop = document.createElement('div');
+    backdrop.id = 'explainer-backdrop';
+    backdrop.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:2147483646;';
+    // 使用 click 而非 mousedown，避免与输入框点击时序冲突
+    backdrop.addEventListener('click', (e) => {
+      console.log('[DEBUG] 遮罩触发关闭', e.composedPath().map(el => el.tagName || el.nodeType));
+      if (STATE.popupEl && STATE.popupEl.isConnected && e.composedPath().includes(STATE.popupEl)) return;
+      destroyPopup();
+    });
+    document.body.appendChild(backdrop);
+
+    // ---- 弹窗宿主（在遮罩层之上，定位由 positionPopup 设置） ----
     const host = document.createElement('div');
     host.id = 'word-explainer-host';
-    host.style.cssText = 'position: fixed; z-index: 2147483647; pointer-events: none;';
+    host.style.cssText = 'position:fixed;z-index:2147483647;';
     document.body.appendChild(host);
 
     // 使用 Shadow DOM 隔离样式
@@ -393,16 +411,23 @@
     shadow.appendChild(popup);
     STATE.popupEl = host;
 
+    // 弹窗根节点事件阻断：同时阻止冒泡和同层其他监听
+    popup.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+    });
+    popup.addEventListener('mouseup', (e) => {
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+    });
+
     // 定位弹窗
     positionPopup(popup, selectionRect);
 
     // 绑定事件
     bindPopupEvents(shadow, selectionRect);
 
-    // 点击弹窗外部关闭
-    setTimeout(() => {
-      document.addEventListener('mousedown', handleOutsideClick, true);
-    }, 100);
+    // 遮罩层已处理外部点击关闭，无需额外监听
 
     // 自动聚焦输入框
     setTimeout(() => {
@@ -516,24 +541,29 @@
       top = Math.max(margin, (viewportHeight - popupMaxHeight) / 2 + window.scrollY);
     }
 
+    // 将定位设置在宿主上（而非 Shadow DOM 内的 popup），确保宿主覆盖弹窗区域
     popup.style.left = left + 'px';
     popup.style.top = top + 'px';
+    popup.style.width = popupWidth + 'px';
     popup.style.maxHeight = Math.min(popupMaxHeight, viewportHeight - margin * 2) + 'px';
   }
 
   function destroyPopup() {
-    if (STATE.popupEl) {
-      STATE.popupEl.remove();
+    console.log('[DEBUG] 执行销毁弹窗');
+    // 已销毁或 DOM 已移除，直接返回防止重复执行
+    if (!STATE.popupEl || !STATE.popupEl.isConnected) {
       STATE.popupEl = null;
       STATE.shadowRoot = null;
+      const backdrop = document.getElementById('explainer-backdrop');
+      if (backdrop) backdrop.remove();
+      return;
     }
-    document.removeEventListener('mousedown', handleOutsideClick, true);
-  }
 
-  function handleOutsideClick(e) {
-    if (STATE.popupEl && !STATE.popupEl.contains(e.target)) {
-      destroyPopup();
-    }
+    STATE.popupEl.remove();
+    STATE.popupEl = null;
+    STATE.shadowRoot = null;
+    const backdrop = document.getElementById('explainer-backdrop');
+    if (backdrop) backdrop.remove();
   }
 
   // ---- 弹窗事件绑定 ----
@@ -640,12 +670,11 @@
       inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
     });
 
-    // ---- 拖拽功能 ----
+    // ---- 拖拽功能（全局监听避免 shadow 内部事件丢失） ----
     let isDragging = false;
     let dragStartX, dragStartY, popupStartLeft, popupStartTop;
 
     header.addEventListener('mousedown', (e) => {
-      // 不拦截按钮的点击
       if (e.target.closest('button')) return;
 
       isDragging = true;
@@ -662,20 +691,17 @@
 
     document.addEventListener('mousemove', (e) => {
       if (!isDragging) return;
-
       const dx = e.clientX - dragStartX;
       const dy = e.clientY - dragStartY;
-
       popup.style.left = (popupStartLeft + dx) + 'px';
       popup.style.top = (popupStartTop + dy) + 'px';
     });
 
     document.addEventListener('mouseup', () => {
-      if (isDragging) {
-        isDragging = false;
-        popup.style.transition = '';
-        header.style.cursor = '';
-      }
+      if (!isDragging || !STATE.popupEl) return;
+      isDragging = false;
+      popup.style.transition = '';
+      header.style.cursor = '';
     });
   }
 
@@ -722,7 +748,6 @@
 
       .explainer-popup {
         position: fixed;
-        z-index: 2147483647;
         width: 420px;
         max-height: 500px;
         background: #ffffff;
