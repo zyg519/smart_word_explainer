@@ -6,16 +6,31 @@
 (function () {
   'use strict';
 
+  // ---- 启动自检（始终输出，便于诊断版本是否更新） ----
+  const VERSION = '2.0.1';
+  const runtimeReady = typeof chrome !== 'undefined' && chrome.runtime && !!chrome.runtime.id;
+  console.log(
+    '%c[划词解读]%c v' + VERSION + ' %c已加载%c | runtime: ' + (runtimeReady ? '✅' : '❌') + ' | id: ' + (runtimeReady ? chrome.runtime.id : 'N/A'),
+    'color:#2563eb;font-weight:bold', 'color:#666', 'color:#059669', 'color:#888'
+  );
+  if (!runtimeReady) {
+    console.error('[划词解读] ⚠️ Chrome 扩展运行时未就绪！请在 chrome://extensions/ 中刷新扩展，然后刷新本页面');
+  }
+
   // ---- 调试工具（content script 内联版） ----
   const DBG = (() => {
     const PREFIX = '[划词解读]';
     let _enabled = false;
 
-    // 启动时从 storage 读取开关
-    chrome.storage.local.get(['debugEnabled'], (r) => { _enabled = !!r.debugEnabled; });
-    chrome.storage.onChanged.addListener((changes) => {
-      if (changes.debugEnabled) { _enabled = !!changes.debugEnabled.newValue; }
-    });
+    // 安全初始化 — chrome.storage 在极少数情况下可能未就绪
+    try {
+      if (chrome && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.get(['debugEnabled'], (r) => { _enabled = !!r.debugEnabled; });
+        chrome.storage.onChanged.addListener((changes) => {
+          if (changes.debugEnabled) { _enabled = !!changes.debugEnabled.newValue; }
+        });
+      }
+    } catch (e) { /* 静默降级：调试功能不可用，但核心功能不受影响 */ }
 
     return {
       get enabled() { return _enabled; },
@@ -25,6 +40,33 @@
       event(tag, detail) { if (_enabled) console.log(PREFIX, '🔔', tag, detail || ''); }
     };
   })();
+
+  // ---- Chrome API 安全调用封装 ----
+  function isRuntimeAvailable() {
+    return typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage;
+  }
+
+  function safeSendMessage(payload) {
+    if (!isRuntimeAvailable()) {
+      throw new Error('Chrome 扩展运行时未就绪，请刷新页面后重试');
+    }
+    return chrome.runtime.sendMessage(payload);
+  }
+
+  // 将底层错误转为用户友好的提示
+  function formatError(error) {
+    const msg = error.message || String(error);
+    if (msg.includes('Extension context invalidated') || msg.includes('extension context')) {
+      return '⚠️ 扩展已更新，请<b>刷新页面</b>（F5）后重试';
+    }
+    if (msg.includes('Receiving end does not exist') || msg.includes('Could not establish')) {
+      return '⚠️ 扩展后台未响应，请检查 chrome://extensions/ 是否有报错，然后刷新页面';
+    }
+    if (msg.includes('未就绪') || msg.includes('刷新页面')) {
+      return '⚠️ ' + msg;
+    }
+    return '❌ ' + msg;
+  }
 
   // ---- 状态管理 ----
   const STATE = {
@@ -135,7 +177,7 @@
     showPopup(selectionRect, 'loading');
 
     try {
-      const response = await chrome.runtime.sendMessage({
+      const response = await safeSendMessage({
         type: 'EXPLAIN',
         payload: {
           selectedText: selectedText,
@@ -154,8 +196,9 @@
         updatePopupContent(`❌ 解释失败: ${response.error}`);
       }
     } catch (error) {
-      DBG.error('Explain', '通信失败:', error.message);
-      updatePopupContent(`❌ 通信失败: ${error.message}`);
+      const msg = formatError(error);
+      DBG.error('Explain', msg);
+      updatePopupContent(msg);
     } finally {
       STATE.isProcessing = false;
     }
@@ -517,7 +560,7 @@
       `;
 
       try {
-        const response = await chrome.runtime.sendMessage({
+        const response = await safeSendMessage({
           type: 'EXPLAIN',
           payload: {
             selectedText: STATE.selectedText,
@@ -533,7 +576,7 @@
           updatePopupContent(`❌ 错误: ${response.error}`);
         }
       } catch (error) {
-        updatePopupContent(`❌ 错误: ${error.message}`);
+        updatePopupContent(formatError(error));
       }
     });
 
@@ -556,7 +599,7 @@
       const loadingId = appendLoadingMessage();
 
       try {
-        const response = await chrome.runtime.sendMessage({
+        const response = await safeSendMessage({
           type: 'CHAT',
           payload: {
             messages: STATE.conversationMessages,
@@ -574,7 +617,7 @@
         }
       } catch (error) {
         removeLoadingMessage(loadingId);
-        appendAssistantMessage(`❌ 通信失败: ${error.message}`);
+        appendAssistantMessage(formatError(error));
       } finally {
         STATE.isProcessing = false;
         inputEl.focus();

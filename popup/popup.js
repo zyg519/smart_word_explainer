@@ -19,9 +19,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnTogglePassword = document.getElementById('btn-toggle-password');
   const debugCheckbox = document.getElementById('debug-enabled');
 
-  // 加载当前配置
+  // ---- 安全的消息发送 ----
+  function safeSendMessage(payload) {
+    if (!(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage)) {
+      throw new Error('扩展运行时未就绪，请重新打开此弹窗');
+    }
+    return chrome.runtime.sendMessage(payload);
+  }
+
+  // ---- 加载当前配置 ----
   try {
-    const response = await chrome.runtime.sendMessage({ type: 'GET_CONFIG' });
+    const response = await safeSendMessage({ type: 'GET_CONFIG' });
     if (response.success) {
       const config = response.data;
       apiEndpointInput.value = config.apiEndpoint || '';
@@ -37,31 +45,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     showStatus('加载配置失败: ' + error.message, 'error');
   }
 
-  // 加载调试开关状态
+  // ---- 加载调试开关 ----
   chrome.storage.local.get(['debugEnabled'], (r) => {
     debugCheckbox.checked = !!r.debugEnabled;
   });
 
-  // 调试开关即时生效
+  // ---- 调试开关即时生效 ----
   debugCheckbox.addEventListener('change', () => {
     chrome.storage.local.set({ debugEnabled: debugCheckbox.checked });
     showStatus(debugCheckbox.checked ? '🐛 调试模式已开启，按 F12 查看控制台' : '调试模式已关闭', 'info');
     setTimeout(hideStatus, 2000);
   });
 
-  // Temperature 滑块显示
+  // ---- Temperature 滑块 ----
   temperatureInput.addEventListener('input', () => {
     tempValue.textContent = temperatureInput.value;
   });
 
-  // 密码显隐切换
+  // ---- 密码显隐 ----
   btnTogglePassword.addEventListener('click', () => {
     const isPassword = apiKeyInput.type === 'password';
     apiKeyInput.type = isPassword ? 'text' : 'password';
     btnTogglePassword.querySelector('svg').style.opacity = isPassword ? '1' : '0.5';
   });
 
-  // 保存设置
+  // ---- 保存设置 ----
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     btnSave.disabled = true;
@@ -78,7 +86,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
 
     try {
-      const response = await chrome.runtime.sendMessage({
+      const response = await safeSendMessage({
         type: 'SAVE_CONFIG',
         payload: config
       });
@@ -96,7 +104,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  // 测试连接
+  // ---- 测试连接 ----
   btnTest.addEventListener('click', async () => {
     btnTest.disabled = true;
     btnTest.textContent = '测试中...';
@@ -159,7 +167,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  // 状态栏辅助
+  // ---- 状态栏 ----
   function showStatus(message, type) {
     statusBar.textContent = message;
     statusBar.className = 'status-bar show ' + type;

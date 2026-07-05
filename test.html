@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>划词解读 - 测试页面</title>
+  <style>
+    body {
+      max-width: 720px;
+      margin: 40px auto;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 16px;
+      line-height: 1.8;
+      color: #1a1a1a;
+    }
+    .test-section {
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 16px 0;
+    }
+    .test-section h3 {
+      margin-top: 0;
+      color: #2563eb;
+    }
+    .highlight {
+      background: #fef3c7;
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+    .status {
+      padding: 8px 16px;
+      border-radius: 6px;
+      margin: 10px 0;
+      font-size: 14px;
+    }
+    .status-ok { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
+    .status-warn { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+    .instructions {
+      background: #f0f7ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 8px;
+      padding: 16px;
+    }
+    kbd {
+      background: #f3f4f6;
+      border: 1px solid #d1d5db;
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-family: monospace;
+      font-size: 0.9em;
+    }
+    #runtime-check {
+      font-family: monospace;
+      font-size: 13px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      margin: 10px 0;
+    }
+    #runtime-check.ok { background: #ecfdf5; color: #065f46; }
+    #runtime-check.fail { background: #fef2f2; color: #991b1b; }
+  </style>
+</head>
+<body>
+  <h1>🧪 划词解读 — 测试页面</h1>
+
+  <div class="instructions">
+    <p><strong>开启调试后按 F12 查看控制台</strong>，日志前缀为 <code>[划词解读]</code></p>
+    <p>操作方式：选中文本 → 按 <kbd>Ctrl</kbd> + <kbd>Alt</kbd> 触发解读</p>
+  </div>
+
+  <div id="runtime-check">⏳ 检测扩展状态中...</div>
+
+  <div class="test-section">
+    <h3>📝 测试 1：单个单词</h3>
+    <p>选中下面的 <span class="highlight">ephemeral</span> 这个词，然后按 Ctrl+Alt 试试。</p>
+    <p>In the vast <span class="highlight">ephemeral</span> beauty of a sunset, we find moments that last forever in memory. The fleeting nature of such experiences makes them precious, yet impossible to grasp.</p>
+  </div>
+
+  <div class="test-section">
+    <h3>📝 测试 2：一段话</h3>
+    <p>选中下面整段话（包括带颜色的背景词），然后按 Ctrl+Alt 试试：</p>
+    <p class="highlight" style="padding:12px; border-radius:6px;">
+      量子纠缠（quantum entanglement）是量子力学中最令人费解的现象之一。爱因斯坦曾称其为"鬼魅般的超距作用"，即两个粒子无论相隔多远，对其中一个的测量会瞬间影响另一个的状态。这种现象看似违背了经典物理学的局域性原理，但已被大量实验证实，并成为量子计算和量子通信的核心基础。
+    </p>
+  </div>
+
+  <div class="test-section">
+    <h3>📝 测试 3：多义词</h3>
+    <p>The company plans to <span class="highlight">strike</span> a deal with their competitors. After the <span class="highlight">strike</span>, workers returned with better benefits. The clock will <span class="highlight">strike</span> midnight soon.</p>
+  </div>
+
+  <script>
+    // 说明：页面内联脚本没有 chrome.runtime 权限，这里始终显示"检测中"
+    // 真正的检测在 content.js 里 —— 打开控制台 (F12) 查看 [划词解读] 日志
+    const checkEl = document.getElementById('runtime-check');
+    setTimeout(() => {
+      checkEl.className = 'ok';
+      checkEl.innerHTML = '📋 <b>请查看控制台 (F12 → Console)</b>：<br>'
+        + '  ✅ 如果看到 <code style="background:#e5e7eb;padding:1px 6px;border-radius:3px">[划词解读] v2.0.1 已加载 | runtime: ✅</code> → 扩展正常<br>'
+        + '  ❌ 如果什么都没看到 → 请在 chrome://extensions/ 中开启「允许访问文件网址」<br>'
+        + '  ❌ 如果看到 <code style="background:#e5e7eb;padding:1px 6px;border-radius:3px">runtime: ❌</code> → 扩展加载异常，需要排查';
+    }, 800);
+  </script>
+</body>
+</html>
