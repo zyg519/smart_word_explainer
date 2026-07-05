@@ -14,7 +14,10 @@ const DEFAULT_CONFIG = {
   systemPrompt: '',
   maxContextLength: 2000,
   temperature: 0.7,
-  maxTokens: 1024
+  maxTokens: 1024,
+  // 新增：思考开关 enabled / disabled
+  thinkingType: "disabled",
+  reasoningEffort: "high"
 };
 
 // 监听来自 content script 的消息
@@ -164,8 +167,26 @@ async function callLLMAPI(config, messages) {
     messages: messages,
     temperature: config.temperature || 0.7,
     max_tokens: config.maxTokens || 1024,
-    stream: false
+    stream: false,
+    // 仅当思考开启时才传 effort，关闭则只传type:disabled
+	  extra_body: {
+	    thinking: {
+	      type: config.thinkingType
+	    }
+	  }
   };
+
+  // 思考启用时追加 reasoning_effort 映射规则
+  if (config.thinkingType === "enabled") {
+    let effort = config.reasoningEffort || "high";
+    // 规则映射 low/medium → high；xhigh → max
+    if (["low", "medium"].includes(effort)) {
+      effort = "high";
+    } else if (effort === "xhigh") {
+      effort = "max";
+    }
+    body.reasoning_effort = effort;
+  }
 
   DEBUG.request('POST', config.apiEndpoint, headers, {
     ...body,
