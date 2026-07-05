@@ -158,35 +158,11 @@ body {
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
 }
 
-.input-password-wrapper {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-
-.input-password-wrapper .form-input {
-  padding-right: 40px;
-}
-
-.btn-toggle-password {
-  position: absolute;
-  right: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  border: none;
-  background: transparent;
-  border-radius: 6px;
-  cursor: pointer;
-  color: #9ca3af;
-  transition: color 0.15s, background 0.15s;
-}
-
-.btn-toggle-password:hover {
-  color: #374151;
-  background: #f3f4f6;
+/* 隐藏 Chrome 内置密码可见按钮 + Edge 眼睛图标 */
+.form-input-password::-ms-reveal,
+.form-input-password::-ms-clear,
+.form-input-password::-webkit-credentials-auto-fill-button {
+  display: none !important;
 }
 
 /* ---- Range 滑块 ---- */
@@ -464,15 +440,6 @@ body {
     background: #1e3a5f;
     color: #bfdbfe;
     border-color: #1e40af;
-  }
-
-  .btn-toggle-password {
-    color: #888;
-  }
-
-  .btn-toggle-password:hover {
-    color: #d0d0d0;
-    background: #2a2a2a;
   }
 
   .form-range {

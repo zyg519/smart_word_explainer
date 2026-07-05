@@ -16,7 +16,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const maxContextInput = document.getElementById('max-context');
   const btnSave = document.getElementById('btn-save');
   const btnTest = document.getElementById('btn-test');
-  const btnTogglePassword = document.getElementById('btn-toggle-password');
   const debugCheckbox = document.getElementById('debug-enabled');
 
   // ---- 安全的消息发送 ----
@@ -60,13 +59,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ---- Temperature 滑块 ----
   temperatureInput.addEventListener('input', () => {
     tempValue.textContent = temperatureInput.value;
-  });
-
-  // ---- 密码显隐 ----
-  btnTogglePassword.addEventListener('click', () => {
-    const isPassword = apiKeyInput.type === 'password';
-    apiKeyInput.type = isPassword ? 'text' : 'password';
-    btnTogglePassword.querySelector('svg').style.opacity = isPassword ? '1' : '0.5';
   });
 
   // ---- 保存设置 ----
