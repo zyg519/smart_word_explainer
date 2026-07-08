@@ -129,7 +129,8 @@
     streamStarted: false,                     // 流式输出标记，区分首次创建气泡和后续更新
     streamBubbleEl: null,                     // 流式输出时当前 assistant 气泡的 DOM 引用
     katexReady: false,                        // KaTeX 库是否已加载完成
-    lastRawResponse: ''                       // 最后一条 AI 回复的原始 Markdown 文本
+    lastRawResponse: '',                      // 最后一条 AI 回复的原始 Markdown 文本
+    popupLocked: false                        // 弹窗锁定状态：true 时外部点击不关闭
   };
 
   // Shadow DOM:
@@ -862,6 +863,7 @@
     const popupInner = shadow.querySelector('.explainer-popup');
     const closeBtn = shadow.getElementById('explainer-btn-close');
     const clearBtn = shadow.getElementById('explainer-btn-clear');
+    const lockBtn = shadow.getElementById('explainer-btn-lock');
     const sendBtn = shadow.getElementById('explainer-btn-send');
     const inputEl = shadow.getElementById('explainer-input');
     const header = shadow.querySelector('.explainer-header');
@@ -873,6 +875,25 @@
     popupInner.addEventListener('click', e => e.stopPropagation());
 
     closeBtn.addEventListener('click', destroyPopup);
+
+    // 锁定/解锁按钮
+    lockBtn.addEventListener('click', () => {
+      STATE.popupLocked = !STATE.popupLocked;
+      const backdrop = document.getElementById('explainer-backdrop');
+      const openIcon = shadow.getElementById('lock-icon-open');
+      const closedIcon = shadow.getElementById('lock-icon-closed');
+      if (STATE.popupLocked) {
+        openIcon.style.display = 'none';
+        closedIcon.style.display = '';
+        lockBtn.title = '解锁弹窗（当前：点击外部不关闭，可操作页面）';
+        if (backdrop) backdrop.style.pointerEvents = 'none';
+      } else {
+        openIcon.style.display = '';
+        closedIcon.style.display = 'none';
+        lockBtn.title = '锁定弹窗';
+        if (backdrop) backdrop.style.pointerEvents = 'auto';
+      }
+    });
 
     // 复制按钮：将渲染后的 DOM 反向转为 Markdown，公式用 data-formula 还原
     shadow.getElementById('explainer-body').addEventListener('click', (e) => {
@@ -1009,7 +1030,10 @@
     const backdrop = document.createElement('div');
     backdrop.id = 'explainer-backdrop';
     backdrop.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:auto;background:rgba(0,0,0,0.4);';
-    backdrop.addEventListener('mousedown', destroyPopup);
+    backdrop.addEventListener('mousedown', () => {
+      if (STATE.popupLocked) return;
+      destroyPopup();
+    });
     document.body.appendChild(backdrop);
 
     // 弹窗外层容器允许交互
@@ -1050,6 +1074,15 @@
           <button class="explainer-btn-icon" id="explainer-btn-clear" title="清空对话" aria-label="清空对话">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
               <path d="M2 4h12l-1.09 9.79A2 2 0 0110.92 15H5.08a2 2 0 01-1.99-1.21L2 4zm2.24 1l.87 7.79a1 1 0 00.97.71h3.84a1 1 0 00.97-.71L11.76 5H4.24zM5.5 2h5v1h-5zm2 0h1v1h-1z" fill="currentColor"/>
+            </svg>
+          </button>
+          <button class="explainer-btn-icon" id="explainer-btn-lock" title="锁定弹窗" aria-label="锁定">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" id="lock-icon-open">
+              <path d="M5 6V4a3 3 0 016 0v2h1a1 1 0 011 1v7a1 1 0 01-1 1H4a1 1 0 01-1-1V7a1 1 0 011-1h1zm1 0h4V4a2 2 0 00-4 0v2z" fill="currentColor"/>
+            </svg>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" id="lock-icon-closed" style="display:none">
+              <path d="M7 9.72V12h2V9.72A2 2 0 009 6a2 2 0 00-2 3.72z" fill="currentColor"/>
+              <path d="M5 6V4a3 3 0 016 0v2h1a1 1 0 011 1v7a1 1 0 01-1 1H4a1 1 0 01-1-1V7a1 1 0 011-1h1zm1 0h4V4a2 2 0 00-4 0v2z" fill="currentColor"/>
             </svg>
           </button>
           <button class="explainer-btn-icon" id="explainer-btn-close" title="关闭" aria-label="关闭">
