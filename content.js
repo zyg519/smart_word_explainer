@@ -214,32 +214,49 @@
     html = html.replace(/__CODE_INLINE_(\d+)__/g, (_, idx) => `<code>${inlineCodeStore[Number(idx)]}</code>`);
     html = html.replace(/__CODE_BLOCK_(\d+)__/g, (_, idx) => `<pre><code>${codeBlockStore[Number(idx)]}</code></pre>`);
 
-    // 5. Markdown语法（修复：标题不嵌套p，清除空段落，消除超大间距）
-    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    // 标题先提取，避免被包裹进p标签
-    html = html.replace(/^### (.+)$/gm, '<h4>$1</h4>');
-    html = html.replace(/^## (.+)$/gm, '<h3>$1</h3>');
-    html = html.replace(/^# (.+)$/gm, '<h2>$1</h2>');
-    // 列表
-    html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
-    html = html.replace(/(<li>.+?<\/li>\s*)+/s, '<ul>$1</ul>');
-    // 链接
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+    // 5. Markdown：按段落拆分，逐段判断类型再处理
+    const paragraphs = html.split(/\n\n/);
+    const outputParts = [];
 
-    // 分段处理：先拆分段落，再合并，彻底清除空p
-    let parts = html.split(/\n\n/);
-    let finalParts = [];
-    for (const p of parts) {
-      const line = p.replace(/\n/g, '<br>').trim();
-      if (!line) continue;
-      // 判断内部是否有块级标题/列表，有则直接输出不包p
-      if (line.includes('<h2>') || line.includes('<h3>') || line.includes('<h4>') || line.includes('<ul>')) {
-        finalParts.push(line);
-      } else {
-        finalParts.push(`<p>${line}</p>`);
+    for (const para of paragraphs) {
+      const trimmed = para.trim();
+      if (!trimmed) continue;
+
+      // ----- 标题 -----
+      if (/^### (.+)$/m.test(trimmed)) {
+        outputParts.push(trimmed.replace(/^### (.+)$/gm, '<h4>$1</h4>'));
+        continue;
       }
+      if (/^## (.+)$/m.test(trimmed)) {
+        outputParts.push(trimmed.replace(/^## (.+)$/gm, '<h3>$1</h3>'));
+        continue;
+      }
+      if (/^# (.+)$/m.test(trimmed)) {
+        outputParts.push(trimmed.replace(/^# (.+)$/gm, '<h2>$1</h2>'));
+        continue;
+      }
+
+      // ----- 无序列表 -----
+      if (/^- .+$/m.test(trimmed)) {
+        const items = trimmed.split(/\n/).filter(l => /^- /.test(l)).map(l => `<li>${l.slice(2)}</li>`);
+        outputParts.push(`<ul>${items.join('')}</ul>`);
+        continue;
+      }
+      // ----- 有序列表 -----
+      if (/^\d+\. .+$/m.test(trimmed)) {
+        const items = trimmed.split(/\n/).filter(l => /^\d+\. /.test(l)).map(l => `<li>${l.replace(/^\d+\. /, '')}</li>`);
+        outputParts.push(`<ol>${items.join('')}</ol>`);
+        continue;
+      }
+
+      // ----- 普通段落（\n → <br>）-----
+      outputParts.push(`<p>${trimmed.replace(/\n/g, '<br>')}</p>`);
     }
-    html = finalParts.join('');
+    html = outputParts.join('');
+
+    // 内联样式（在段落内部全局应用）
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
 
     // 6. 恢复并渲染数学公式
     console.log('[划词解读] 🔢 公式渲染：mathStore总数=' + mathStore.length + ', katexReady=' + STATE.katexReady + ', window.katex=' + typeof window.katex);
@@ -317,7 +334,7 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 10px 14px;
+        padding: 7px 12px;
         border-bottom: 1px solid #f0f0f0;
         cursor: grab;
         user-select: none;
@@ -332,17 +349,21 @@
       .explainer-btn-icon:hover { background:#e8e8e8;color:#333; }
       .explainer-btn-send { width:32px;height:32px;border:none;background:#2563eb;color:#fff;border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:0.15s; }
       .explainer-btn-send:hover { background:#1d4ed8; }
-      .explainer-selected-text { padding:8px 14px;background:#f0f7ff;border-bottom:1px solid #dbeafe;font-size:12px;flex-shrink:0; }
+      .explainer-selected-text { padding:5px 12px;background:#f0f7ff;border-bottom:1px solid #dbeafe;font-size:12px;flex-shrink:0; }
       .explainer-label { color:#6b7280;margin-right:4px; }
       .explainer-selected-content { color:#1e40af;font-weight:500;font-style:italic; }
-      .explainer-body { flex:1;overflow-y:auto;padding:14px;min-height:60px;max-height:350px;display:flex;flex-direction:column;gap:10px; }
+      .explainer-body { flex:1;overflow-y:auto;padding:10px 12px;min-height:60px;max-height:350px;display:flex;flex-direction:column;gap:6px; }
       .explainer-body::-webkit-scrollbar { width:6px; }
       .explainer-body::-webkit-scrollbar-thumb { background:#d0d0d0;border-radius:3px; }
       .explainer-message { animation:explainerFadeIn 0.2s ease-out;display:flex;flex-direction:column; }
       .explainer-message-user .explainer-bubble { align-self:flex-end;background:#2563eb;color:#fff;border-radius:12px 12px 4px 12px;padding:8px 14px;max-width:85%; }
       .explainer-message-assistant .explainer-bubble { align-self:flex-start;background:#f3f4f6;color:#1a1a1a;border-radius:12px 12px 12px 4px;padding:10px 14px;max-width:100%;line-height:1.7; }
-      .explainer-bubble p { margin:0 0 6px 0; }
+      .explainer-bubble p { margin:0 0 4px 0; line-height:1.65; }
       .explainer-bubble p:last-child { margin-bottom:0; }
+      .explainer-bubble ul, .explainer-bubble ol { margin:4px 0; padding-left:20px; }
+      .explainer-bubble li { margin-bottom:2px; }
+      .explainer-bubble h2, .explainer-bubble h3, .explainer-bubble h4 { margin:8px 0 4px 0; }
+      .explainer-bubble pre { margin:6px 0; }
       .explainer-bubble strong { color:#1e40af;font-weight:600; }
       .explainer-bubble code { background:rgba(0,0,0,0.06);padding:2px 6px;border-radius:4px;font-family:SF Mono,Fira Code,monospace;font-size:0.9em; }
       .explainer-loading { display:flex;align-items:center;justify-content:center;gap:10px;padding:24px;color:#9ca3af;font-size:13px; }
@@ -350,7 +371,7 @@
       .explainer-spinner { width:20px;height:20px;border:2.5px solid #e5e7eb;border-top-color:#2563eb;border-radius:50%;animation:spin 0.7s linear infinite; }
       .explainer-spinner-sm { width:14px;height:14px;border-width:2px; }
       @keyframes spin { to { transform:rotate(360deg); } }
-      .explainer-footer { padding:10px 14px;border-top:1px solid #f0f0f0;flex-shrink:0;background:#fafafa;border-radius:0 0 12px 12px; }
+      .explainer-footer { padding:8px 12px;border-top:1px solid #f0f0f0;flex-shrink:0;background:#fafafa;border-radius:0 0 12px 12px; }
       .explainer-input-wrapper { display:flex;align-items:flex-end;gap:8px; }
       .explainer-input { flex:1;border:1px solid #e5e7eb;border-radius:8px;padding:8px 12px;font-size:13px;font-family:inherit;resize:none;outline:none;line-height:1.4;max-height:120px;background:#fff;color:#1a1a1a;transition:0.15s; }
       .explainer-input:focus { border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,0.1); }
@@ -358,6 +379,7 @@
       @media (prefers-color-scheme: dark) {
         .explainer-popup { background:#1e1e1e;border-color:#3a3a3a;box-shadow:0 8px 32px rgba(0,0,0,0.4);color:#e0e0e0; }
         .explainer-header { background:#252525;border-bottom-color:#3a3a3a; }
+        .explainer-bubble pre { background:#333; }
         .explainer-title { color:#e0e0e0; }
         .explainer-btn-icon { color:#999; }
         .explainer-btn-icon:hover { background:#3a3a3a;color:#e0e0e0; }
