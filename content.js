@@ -886,12 +886,12 @@
         openIcon.style.display = 'none';
         closedIcon.style.display = '';
         lockBtn.title = '解锁弹窗（当前：点击外部不关闭，可操作页面）';
-        if (backdrop) backdrop.style.pointerEvents = 'none';
+        if (backdrop) { backdrop.style.pointerEvents = 'none'; backdrop.style.background = 'transparent'; }
       } else {
         openIcon.style.display = '';
         closedIcon.style.display = 'none';
         lockBtn.title = '锁定弹窗';
-        if (backdrop) backdrop.style.pointerEvents = 'auto';
+        if (backdrop) { backdrop.style.pointerEvents = 'auto'; backdrop.style.background = 'rgba(0,0,0,0.4)'; }
       }
     });
 
