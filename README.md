@@ -18,7 +18,7 @@
 
 ## 📄 文档
 
-以下为快速安装与使用指南。详细配置说明请参考后文。
+以下为 AI 生成的快速安装与使用指南，如有错误欢迎指正。
 
 <details open>
 <summary>安装</summary>
@@ -75,12 +75,14 @@ git clone https://github.com/yourname/explain_module.git
 |------|------|
 | 🔗 **上下文感知** | 自动提取选中内容所在段落的上下文，解读贴合原文语境，而非孤立解释单词 |
 | 💬 **对话追问** | 解读完成后可在弹窗内继续提问，完整的多轮对话体验 |
+| 📡 **流式输出** | 可选开启流式输出，回复内容逐字显示，体验更流畅 |
+| 📐 **公式渲染** | 集成 KaTeX，支持 `$...$` `$$...$$` `\(...\)` `\[...\]` 数学公式渲染 |
+| 📝 **Markdown** | 标题、有序/无序列表、代码块、粗体、链接等完整 Markdown 语法支持 |
 | 🎨 **明暗主题** | 自动跟随系统深色模式，弹窗 UI 无缝融入任意网页 |
 | 🔌 **多 API 兼容** | 支持 DeepSeek、通义千问、智谱、Kimi、OpenAI 等所有 OpenAI 兼容接口 |
 | ✏️ **自定义提示词** | 支持 `{CONTEXT}` 和 `{SELECTION}` 变量，可自由定制解读风格 |
 | 🖱️ **可拖拽弹窗** | 标题栏拖拽移动，不影响页面操作 |
 | 🛡️ **事件隔离** | Shadow DOM 封装样式与事件，输入框编辑键不回传到页面 |
-| 📦 **零依赖** | 纯原生 JavaScript，不引入任何第三方库 |
 
 ## 🔌 兼容的 API 服务
 
@@ -103,6 +105,10 @@ git clone https://github.com/yourname/explain_module.git
 ├── content.css            # 宿主元素基础样式
 ├── prompts.js             # 系统提示词模板（独立文件，方便修改）
 ├── debug.js               # 调试工具模块（通过设置面板开启）
+├── lib/
+│   ├── katex.min.js       # KaTeX 公式渲染库
+│   ├── katex.min.css
+│   └── fonts/             # KaTeX 字体文件
 ├── popup/
 │   ├── popup.html         # 设置面板页面
 │   ├── popup.js           # 设置面板逻辑

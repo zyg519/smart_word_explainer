@@ -75,12 +75,14 @@ Click the extension icon to open the settings panel. Fill in your LLM API detail
 |---------|-------------|
 | 🔗 **Context-Aware** | Automatically extracts the surrounding paragraph as context for explanations that fit the original text |
 | 💬 **Follow-Up Chat** | Multi-turn conversation support — continue asking after the initial explanation |
+| 📡 **Streaming Output** | Optional streaming mode — replies appear word-by-word in real time |
+| 📐 **Math Rendering** | KaTeX integration — renders `$...$` `$$...$$` `\(...\)` `\[...\]` math formulas |
+| 📝 **Markdown** | Headers, ordered/unordered lists, code blocks, bold, links — full Markdown support |
 | 🎨 **Dark Mode** | Automatically follows the system color scheme, blending seamlessly into any webpage |
 | 🔌 **Multi-API Compatible** | Works with DeepSeek, Qwen, GLM, Kimi, OpenAI, and any OpenAI-compatible endpoint |
 | ✏️ **Custom Prompts** | Supports `{CONTEXT}` and `{SELECTION}` placeholders for fully customizable explanation style |
 | 🖱️ **Draggable Popup** | Reposition the popup by dragging its title bar |
 | 🛡️ **Event Isolation** | Shadow DOM encapsulation — edit keys inside the popup never leak to the host page |
-| 📦 **Zero Dependencies** | Pure vanilla JavaScript with no third-party libraries |
 
 ## 🔌 Compatible API Providers
 
@@ -103,6 +105,10 @@ The following are reference configurations for common providers. Endpoints must 
 ├── content.css            # Host element base styles
 ├── prompts.js             # System prompt templates (standalone file for easy editing)
 ├── debug.js               # Debug utility module (toggled via settings panel)
+├── lib/
+│   ├── katex.min.js       # KaTeX math rendering library
+│   ├── katex.min.css
+│   └── fonts/             # KaTeX font files
 ├── popup/
 │   ├── popup.html         # Settings panel page
 │   ├── popup.js           # Settings panel logic
