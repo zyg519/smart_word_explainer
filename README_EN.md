@@ -52,6 +52,8 @@ Select any text on a webpage and press **Ctrl + Alt**, or hold **Ctrl + Alt** wh
 | Click the gray backdrop outside | Close popup |
 | `Shift + Enter` | Insert a new line in the input field |
 
+> **macOS users**: Use **Control + Option (⌃ + ⌥)** instead of Ctrl + Alt. The Option key is recognized as `Alt` in Chrome; all other features work identically across platforms.
+
 ### Configuring the API
 
 Click the extension icon to open the settings panel. Fill in your LLM API details and save. Compatible with any OpenAI-style endpoint.

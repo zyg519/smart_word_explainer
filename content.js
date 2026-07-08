@@ -3,10 +3,24 @@
 // 修复：1.输入框退格/删除会删掉页面原生文本 2.事件冒泡冲突 3.弹窗焦点隔离 4.全部catch带完整大括号
 // ============================================================
 (function () {
+
+  // 开启 JS严格模式:
+  //  字符串字面量，固定写法 'use strict'，必须写在代码块最顶部；
+  //  作用范围：只对当前所在函数 / 脚本生效；
+  //  严格模式规则（小白能看懂）：
+  //  变量必须 let/const/var 声明才能使用，不能直接写 a=1；
+  //  禁止偷偷创建全局变量，减少网页变量冲突；
+  //  很多模糊、有坑的旧 JS 语法直接禁用，代码更安全。
   'use strict';
 
-  const VERSION = '2.0.1';
+  const VERSION = '2.0.1';      // 定义常量，保存脚本版本号
+
+  // typeof chrome：运算符 typeof，获取后面数据的类型，返回字符串
+  // !==：严格不等号，左右值类型 + 内容完全不一样才为 true
+  // 两个 !!：把任意值强制转成布尔；有 id= true，无 id=false；
   const runtimeReady = typeof chrome !== 'undefined' && chrome.runtime && !!chrome.runtime.id;
+
+  // 控制台打印彩色加载日志，显示版本、扩展状态、扩展 ID
   console.log(
     '%c[划词解读]%c v' + VERSION + ' %c已加载%c | runtime: ' + (runtimeReady ? '✅' : '❌') + ' | id: ' + (runtimeReady ? chrome.runtime.id : 'N/A'),
     'color:#2563eb;font-weight:bold', 'color:#666', 'color:#059669', 'color:#888'
@@ -15,16 +29,28 @@
     console.error('[划词解读] ⚠️ Chrome 扩展运行时未就绪！刷新页面重试');
   }
 
-  const DBG = (() => {
+  // (()=>{})()：IIFE 立即执行箭头函数
+  // ()=>{}：无参匿名箭头函数
+  // 外层括号把函数转为表达式，末尾()立刻执行
+  // 函数内部所有变量（PREFIX/_enabled）只在函数内生效，外部访问不到，隔离全局污染
+  const DBG = (() => {        
     const PREFIX = '[划词解读]';
-    let _enabled = false;
+    let _enabled = false;       // let 声明可变变量
     try {
       if (chrome && chrome.storage && chrome.storage.local) {
+
+        // chrome.storage.local.get(键数组, 回调)：Chrome 扩展 API，异步读取本地持久存储；
+        // ['debugEnabled'] 数组字面量，指定要读取的配置键；
+        // r => {} 箭头回调函数：读取完成后自动执行，r是读取到的全部配置对象
         chrome.storage.local.get(['debugEnabled'], r => {
           _enabled = !!r.debugEnabled;
         });
+
+        // .addListener(回调)：浏览器存储事件监听；
+        // 当本地存储配置发生修改时，自动执行箭头回调；
+        // changes 参数：保存本次变更的配置信息。
         chrome.storage.onChanged.addListener(changes => {
-          if (changes.debugEnabled) {
+          if (changes.debugEnabled) {                           // 判断本次修改的配置是不是debugEnabled，只响应调试开关的变动。
             _enabled = !!changes.debugEnabled.newValue;
           }
         });
@@ -32,6 +58,15 @@
     } catch (e) {
       console.warn(PREFIX, '调试工具初始化异常', e);
     }
+
+    // 对象简写方法，等价 log: function(tag, ...args){}；
+    // tag：日志分类标签（如 Context、Explain）；
+    // ...args 剩余参数：接收调用时传入的所有额外内容，打包成数组；
+    // if (_enabled)：只有调试开关打开才执行打印；
+    // `[${tag}]` 模板字符串，${变量} 直接嵌入文本；
+    // ...args 展开运算符：把数组打散，逐个传给console.log；
+    // , 对象方法分隔符。
+
     return {
       log(tag, ...args) {
         if (_enabled) {
@@ -54,15 +89,20 @@
     };
   })();
 
+  // 检测当前页面是否具备完整 Chrome 扩展通信环境
   function isRuntimeAvailable() {
     return typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage;
   }
+
+  // 封装安全发送消息逻辑，发送前先校验扩展通信环境，避免直接调用 API 报错
   function safeSendMessage(payload) {
     if (!isRuntimeAvailable()) {
       throw new Error('扩展运行时未就绪，请刷新页面');
     }
     return chrome.runtime.sendMessage(payload);
   }
+
+  // 原始报错信息是英文、专业难懂的浏览器底层文字，这个函数把它翻译成用户看得懂的中文提示。
   function formatError(error) {
     const msg = error.message || String(error);
     if (msg.includes('Extension context invalidated') || msg.includes('extension context')) {
@@ -75,26 +115,38 @@
   }
 
   const STATE = {
-    ctrlPressed: false,
-    altPressed: false,
-    isProcessing: false,
-    popupEl: null,
-    shadowRoot: null,
-    popupInner: null,
-    conversationMessages: [],
-    systemPrompt: '',
-    selectedText: '',
-    contextText: '',
-    isDragging: false
+    ctrlPressed: false,                      // 标记键盘 Ctrl 键是否处于按住状态，快捷键 Ctrl+Alt 组合判断用
+    altPressed: false,                       // 标记 Alt 键是否按住
+    isProcessing: false,                     // 是否正在请求 AI 后台
+    popupEl: null,                           // 用来判断弹窗是否已经打开、遮罩点击关闭逻辑
+    shadowRoot: null,                        // 用来判断光标是否落在弹窗内部，解决退格删除页面文字的冲突
+    popupInner: null,                        // 拖拽、弹窗内部事件监听会用到
+    conversationMessages: [],                // 存储当前弹窗完整多轮对话记录：用户提问、AI 回复, 每次发送追问时，把历史对话一并传给后台，实现多轮上下文记忆
+    systemPrompt: '',                        // 保存后台返回 / 用户自定义的系统提示词，传给 AI 接口
+    selectedText: '',                        // 用户最初选中、唤起弹窗的原文
+    contextText: '',                         // 选中文字所在段落的上下文截取文本
+    isDragging: false                        // 标记用户是否正在拖拽弹窗标题栏移动窗口
   };
 
+  // Shadow DOM:
+  // 普通页面所有标签、CSS 全部在同一个全局空间里; 
+  // 浏览器提供的隔离容器(Shadow DOM)创建一块独立封闭的微型 DOM 空间, 和外层页面 DOM 完全隔绝, 里面的 HTML、CSS、JS 不会和外面互相干扰.
+  // 弹窗所有 HTML、CSS 全部塞进 shadowRoot 里面渲染。
+  // 页面的 CSS 进不去 shadow，不会改你弹窗样式；
+  // 弹窗内部的 CSS 不会污染外面网页；
+  // 页面 document.querySelector() 选不到 shadow 里面的输入框、按钮；
+  // 只有通过 shadowRoot.querySelector 才能获取弹窗内部元素
+
   // 从 storage 读取高级配置，上下文截取长度等设置可实时生效
+  // 初始化读取 chrome.storage.local.get：页面刚加载，一次性拉取保存过的配置，初始化 maxContextLength
   let maxContextLength = 2000;
   chrome.storage.local.get(['explainerConfig'], (result) => {
     if (result.explainerConfig && result.explainerConfig.maxContextLength) {
       maxContextLength = result.explainerConfig.maxContextLength;
     }
   });
+
+  // 实时监听用户在设置页修改配置，不用刷新页面，变量立刻同步更新
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.explainerConfig && changes.explainerConfig.newValue) {
       const cfg = changes.explainerConfig.newValue;
@@ -102,11 +154,14 @@
     }
   });
 
+  // 把 < > & " ' 这类有 HTML 语义的符号，自动转成安全实体字符，防止 XSS、弹窗内布局错乱、标签被浏览器解析
   function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
   }
+
+  // 这个函数接收纯文本（AI 返回的 markdown 风格文字），先转义防 XSS，再把简易 Markdown 语法批量转换成 HTML 标签，最终返回可直接放进弹窗的安全富文本
   function formatTextToHtml(text) {
     let html = escapeHtml(text);
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
@@ -118,6 +173,9 @@
     html = html.replace(/<p><\/p>/g, '<p><br></p>');
     return html;
   }
+
+  // 因为弹窗放在 ShadowDOM 里，样式必须通过 JS 拼接 <style> 标签注入，
+  // 所以封装成函数统一输出所有弹窗样式，包含亮色 / 暗黑两套主题、动画、滚动条、聊天气泡、输入框、按钮全套布局。
   function getPopupStyles() {
     return `
       :host { all: initial; pointer-events: auto; }
@@ -201,6 +259,8 @@
       }
     `;
   }
+
+  // 把 AI 回复渲染到弹窗聊天区域，一次性清空原有内容、替换成新回复，自动滚动到底部。
   function updatePopupContent(text) {
     if (!STATE.shadowRoot) {
       return;
@@ -209,6 +269,8 @@
     body.innerHTML = `<div class="explainer-message explainer-message-assistant"><div class="explainer-bubble">${formatTextToHtml(text)}</div></div>`;
     body.scrollTop = body.scrollHeight;
   }
+
+  // 新增一条用户消息，不覆盖原有对话，追加在已有消息下方，自动滚到底部
   function appendUserMessage(text) {
     if (!STATE.shadowRoot) {
       return;
@@ -220,6 +282,8 @@
     body.appendChild(div);
     body.scrollTop = body.scrollHeight;
   }
+
+  // 在聊天框底部新增一条 AI 回复气泡，保留历史所有对话，不会覆盖原有内容，渲染后自动滚动到底部。
   function appendAssistantMessage(text) {
     if (!STATE.shadowRoot) {
       return;
@@ -231,6 +295,8 @@
     body.appendChild(div);
     body.scrollTop = body.scrollHeight;
   }
+
+  // 发送 AI 请求时，在聊天框底部生成一条带旋转加载图标的等待提示，返回这条加载 DOM 的唯一 ID，后续 AI 回复回来可以根据 ID 删除加载提示。
   function appendLoadingMessage() {
     if (!STATE.shadowRoot) {
       return;
@@ -245,6 +311,8 @@
     body.scrollTop = body.scrollHeight;
     return id;
   }
+
+  // AI 接口返回结果（成功 / 报错）后，把之前显示的加载动画气泡从聊天框删掉。
   function removeLoadingMessage(id) {
     if (!STATE.shadowRoot || !id) {
       return;
@@ -256,15 +324,25 @@
   }
 
   // 全局按键监听：增加弹窗焦点隔离，输入框编辑不影响页面
-  document.addEventListener('keydown', (e) => {
+  // 整体作用：监听键盘按下、窗口失焦、鼠标松开事件，实现快捷键 Ctrl + Alt + 鼠标选文字 / Ctrl+Alt按住再按Alt 唤起划词弹窗；
+  // 同时做冲突处理：光标在弹窗内部时，不触发全局快捷键逻辑
+  document.addEventListener('keydown', (e) => {           // document.addEventListener('事件名', 回调)：全局注册事件监听
 
     // if (e.key === 'Escape' && STATE.popupEl) {         // 按下键盘 Esc 键，且弹窗存在时，直接销毁弹窗, 写在最前面：无论光标在哪，按 ESC 都能关掉弹窗
     //   destroyPopup();
     //   return;
     // }
+    // 网页body
+    //    └── popupEl（普通div，暴露在全局DOM，你能通过document查到）
+    //      └── shadowRoot（独立隔离影子空间，全局看不见）
+    //          ├─ <style> 弹窗全套CSS
+    //          ├─ .explainer-header 标题栏
+    //          ├─ .explainer-selected-text 选中文字栏
+    //          ├─ #explainer-body 聊天框
+    //          └─ .explainer-footer 输入框区域
     // 判断焦点是否落在弹窗内部，是则直接阻断全局按键逻辑
-    if (STATE.popupEl && STATE.shadowRoot) {
-      const activeEl = document.activeElement;
+    if (STATE.popupEl && STATE.shadowRoot) {          // 弹窗存在才执行判断
+      const activeEl = document.activeElement;        // 当前页面光标聚焦的 DOM（输入框、按钮等）
       const inPopupScope = STATE.shadowRoot.contains(activeEl) || STATE.popupEl.contains(activeEl);
       if (inPopupScope) {
         return;
@@ -291,6 +369,8 @@
     }
     
   });
+
+  // 监听键盘松开
   document.addEventListener('keyup', e => {
     if (e.key === 'Control') {
       STATE.ctrlPressed = false;
@@ -299,11 +379,18 @@
       STATE.altPressed = false;
     }
   });
+
+  // 单纯靠 keyup 松开按键更新状态，存在漏洞：
+  // 按住 Ctrl+Alt，直接切走窗口，没松开按键；
+  // 页面收不到 keyup 事件，ctrlPressed / altPressed 会永久停留在 true；
+  // 切回页面随便拖动鼠标就会误触发划词弹窗。
+  // window.blur 就是兜底修复：只要窗口失去焦点，直接清空按键按住标记，避免状态卡死
   window.addEventListener('blur', () => {
     STATE.ctrlPressed = false;
     STATE.altPressed = false;
   });
 
+  // 实现组合快捷键划词：按住 Ctrl + Alt，鼠标拖动选中文字，松开鼠标自动唤起解读弹窗
   document.addEventListener('mouseup', (e) => {
     if (STATE.popupEl && STATE.popupEl.isConnected) {
       return;
@@ -311,25 +398,40 @@
     if (!STATE.ctrlPressed || !STATE.altPressed || STATE.isProcessing) {
       return;
     }
-    const sel = window.getSelection();
-    if (!sel || !sel.toString().trim()) {
-      return;
+    const sel = window.getSelection();                // 获取当前鼠标选中的文本对象
+    if (!sel || !sel.toString().trim()) {             // 取出选中文字并去除首尾空格
+      return;                                         // 没有选中有效文字直接返回，不触发弹窗
     }
     DBG.event('鼠标选择触发', sel.toString().trim().substring(0, 50));
     triggerExplanation();
   });
 
-  function extractContext(selection) {
+  // 传入页面鼠标选中区域 Selection 对象，自动抓取选中文字所在段落 / 附近文本，裁剪成一段上下文，一起传给 AI，让 AI 结合语境解读单词句子；
+  function extractContext(selection) {        // selection：window.getSelection(), 返回的选中对象，包含鼠标选区信息
     try {
-      const range = selection.getRangeAt(0);
+      const range = selection.getRangeAt(0);             // 获取第一个选区（普通单选文字只有一个), range 包含选区起始、结束节点、偏移位置
+
+      // commonAncestorContainer：选区起始、结束节点共同的最近父节点；
+      // 例：一段文字跨两个<span>，会取包裹两个 span 的父 div/p。
       let container = range.commonAncestorContainer;
       if (container.nodeType === Node.TEXT_NODE) {
         container = container.parentElement;
       }
+
+      // 如果共同祖先只是纯文字，往上取它的父标签（p/div/section）作为容器。
       const block = findBlockAncestor(container);
+
+      // 调用外部函数 findBlockAncestor，向上递归查找块级段落容器（<p> / <div> / <article> / section 等段落级标签）。
+      // 目标：拿到完整段落文本，而不是零散一小段文字。
       if (block) {
+
+        // 成功找到完整段落块：读取块内全部文本 block.textContent；
+        // 调用 truncateContext 按预设长度截断上下文，同时保留选中文字在中间；
+        // 直接返回处理好的上下文字符串。
         return truncateContext(block.textContent || '', STATE.selectedText);
       }
+
+      // 没找到完整段落块时降级逻辑：取选区起始文字节点
       const node = range.startContainer;
       if (node.nodeType === Node.TEXT_NODE) {
         const text = node.textContent;
@@ -342,6 +444,7 @@
       return '';
     }
   }
+
   function findBlockAncestor(el) {
     const blockTags = ['P', 'DIV', 'ARTICLE', 'SECTION', 'BLOCKQUOTE', 'LI', 'TD', 'TH', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'PRE', 'ASIDE', 'MAIN', 'BODY'];
     let cur = el;
@@ -353,6 +456,7 @@
     }
     return null;
   }
+
   function truncateContext(full, target) {
     const max = maxContextLength;
     if (full.length <= max) {
@@ -367,6 +471,7 @@
     const e = Math.min(full.length, idx + target.length + half);
     return (s > 0 ? '...' : '') + full.slice(s, e) + (e < full.length ? '...' : '');
   }
+
   function getSelectionRect(sel) {
     try {
       if (sel.rangeCount === 0) {
@@ -485,8 +590,12 @@
       backdrop.remove();
     }
   }
-
+  // 你点击页面里内层小元素，这个点击事件会一层一层往上传递，传到它所有父元素、直到最顶层 document / window，这个向上传递的过程就叫事件冒泡
   // 修复版事件绑定：弹窗内按键停止冒泡，删除键不会穿透页面
+  // popupInner 是整个弹窗容器；
+  // 在弹窗内任意位置按下按键（包括 Escape），触发 keydown；
+  // e.stopPropagation() 中断事件向上冒泡；
+  // 以 ESC 键为例，你全局挂载在 document 的 keydown 监听收不到这个 ESC 事件，自然无法执行关闭弹窗代码
   function bindPopupEvents(shadow) {
     const popupInner = shadow.querySelector('.explainer-popup');
     const closeBtn = shadow.getElementById('explainer-btn-close');

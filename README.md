@@ -52,6 +52,8 @@ git clone https://github.com/yourname/explain_module.git
 | 点击弹窗外灰色遮罩 | 关闭弹窗 |
 | `Shift + Enter` | 输入框内换行 |
 
+> **macOS 用户**：使用 **Control + Option（⌃ + ⌥）** 代替 Ctrl + Alt。macOS 的 Option 键在 Chrome 中被识别为 Alt，其余操作完全一致。
+
 ### 配置 API
 
 点击扩展图标打开设置面板，填入大模型 API 信息后保存。支持任意 OpenAI 兼容接口。
