@@ -127,7 +127,8 @@
     contextText: '',                         // 选中文字所在段落的上下文截取文本
     isDragging: false,                        // 标记用户是否正在拖拽弹窗标题栏移动窗口
     streamStarted: false,                     // 流式输出标记，区分首次创建气泡和后续更新
-    streamBubbleEl: null                      // 流式输出时当前 assistant 气泡的 DOM 引用
+    streamBubbleEl: null,                     // 流式输出时当前 assistant 气泡的 DOM 引用
+    katexReady: false                         // KaTeX 库是否已加载完成
   };
 
   // Shadow DOM:
@@ -138,6 +139,14 @@
   // 弹窗内部的 CSS 不会污染外面网页；
   // 页面 document.querySelector() 选不到 shadow 里面的输入框、按钮；
   // 只有通过 shadowRoot.querySelector 才能获取弹窗内部元素
+
+  // KaTeX 由 manifest.json content_scripts 在 content.js 之前加载，
+  // 同处隔离世界，katex 直接挂到 window，无需 eval
+  (function initKaTeX() {
+    STATE.katexReady = typeof katex !== 'undefined' && typeof katex.renderToString === 'function';
+    console.log('[划词解读] 🔍 KaTeX 检测:', STATE.katexReady ? '✅ 已就绪 v' + (katex.version || '?') : '❌ 未加载 (typeof katex = ' + typeof katex + ')');
+    // CSS 在 showPopup 中注入 Shadow DOM（样式隔离要求必须在 shadow 内）
+  })();
 
   // 从 storage 读取高级配置，上下文截取长度等设置可实时生效
   // 初始化读取 chrome.storage.local.get：页面刚加载，一次性拉取保存过的配置，初始化 maxContextLength
@@ -165,15 +174,118 @@
 
   // 这个函数接收纯文本（AI 返回的 markdown 风格文字），先转义防 XSS，再把简易 Markdown 语法批量转换成 HTML 标签，最终返回可直接放进弹窗的安全富文本
   function formatTextToHtml(text) {
-    let html = escapeHtml(text);
+    let raw = text;
+    const mathStore = [];
+    const codeBlockStore = [];
+    const inlineCodeStore = [];
+
+    // 1. 优先缓存全部数学公式，避免escapeHtml转义 $ \
+    raw = raw.replace(/\$\$([\s\S]+?)\$\$/g, (_, formula) => {
+      mathStore.push({ type: 'block', formula });
+      return `__MATH_BLOCK_${mathStore.length - 1}__`;
+    });
+    raw = raw.replace(/\\\[([\s\S]+?)\\\]/g, (_, formula) => {
+      mathStore.push({ type: 'block', formula });
+      return `__MATH_BLOCK_${mathStore.length - 1}__`;
+    });
+    raw = raw.replace(/\\\(([\s\S]+?)\\\)/g, (_, formula) => {
+      mathStore.push({ type: 'inline', formula });
+      return `__MATH_INLINE_${mathStore.length - 1}__`;
+    });
+    raw = raw.replace(/(?<!\w)\$([^\$]+?)\$(?!\w)/g, (_, formula) => {
+      mathStore.push({ type: 'inline', formula });
+      return `__MATH_INLINE_${mathStore.length - 1}__`;
+    });
+
+    // 2. 缓存代码块
+    raw = raw.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+      codeBlockStore.push(escapeHtml(code.trim()));
+      return `__CODE_BLOCK_${codeBlockStore.length - 1}__`;
+    });
+    raw = raw.replace(/`([^`]+)`/g, (_, code) => {
+      inlineCodeStore.push(escapeHtml(code));
+      return `__CODE_INLINE_${inlineCodeStore.length - 1}__`;
+    });
+
+    // 3. HTML转义
+    let html = escapeHtml(raw);
+
+    // 4. 恢复代码占位
+    html = html.replace(/__CODE_INLINE_(\d+)__/g, (_, idx) => `<code>${inlineCodeStore[Number(idx)]}</code>`);
+    html = html.replace(/__CODE_BLOCK_(\d+)__/g, (_, idx) => `<pre><code>${codeBlockStore[Number(idx)]}</code></pre>`);
+
+    // 5. Markdown语法（修复：标题不嵌套p，清除空段落，消除超大间距）
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-    html = html.replace(/\n\n/g, '</p><p>');
-    html = html.replace(/\n/g, '<br>');
-    html = '<p>' + html + '</p>';
-    html = html.replace(/<p>- /g, '<p>• ');
-    html = html.replace(/<p><\/p>/g, '<p><br></p>');
+    // 标题先提取，避免被包裹进p标签
+    html = html.replace(/^### (.+)$/gm, '<h4>$1</h4>');
+    html = html.replace(/^## (.+)$/gm, '<h3>$1</h3>');
+    html = html.replace(/^# (.+)$/gm, '<h2>$1</h2>');
+    // 列表
+    html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+    html = html.replace(/(<li>.+?<\/li>\s*)+/s, '<ul>$1</ul>');
+    // 链接
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+
+    // 分段处理：先拆分段落，再合并，彻底清除空p
+    let parts = html.split(/\n\n/);
+    let finalParts = [];
+    for (const p of parts) {
+      const line = p.replace(/\n/g, '<br>').trim();
+      if (!line) continue;
+      // 判断内部是否有块级标题/列表，有则直接输出不包p
+      if (line.includes('<h2>') || line.includes('<h3>') || line.includes('<h4>') || line.includes('<ul>')) {
+        finalParts.push(line);
+      } else {
+        finalParts.push(`<p>${line}</p>`);
+      }
+    }
+    html = finalParts.join('');
+
+    // 6. 恢复并渲染数学公式
+    console.log('[划词解读] 🔢 公式渲染：mathStore总数=' + mathStore.length + ', katexReady=' + STATE.katexReady + ', window.katex=' + typeof window.katex);
+    if (STATE.katexReady && window.katex) {
+      html = html.replace(/__MATH_BLOCK_(\d+)__/g, (_, idx) => {
+        const item = mathStore[Number(idx)];
+        console.log('[划词解读] 📐 渲染块公式:', item.formula.substring(0, 40));
+        return renderMath(item.formula, true);
+      });
+      html = html.replace(/__MATH_INLINE_(\d+)__/g, (_, idx) => {
+        const item = mathStore[Number(idx)];
+        console.log('[划词解读] 📐 渲染行内公式:', item.formula.substring(0, 40));
+        return renderMath(item.formula, false);
+      });
+    } else {
+      console.log('[划词解读] ⚠️ KaTeX 未就绪，公式原文展示 (mathStore: ' + mathStore.length + ' 条)');
+      html = html.replace(/__MATH_BLOCK_(\d+)__/g, (_, idx) => {
+        const f = escapeHtml(mathStore[Number(idx)].formula);
+        return `<pre style="background:#f0f0f0;padding:6px;border-radius:4px;">$$${f}$$</pre>`;
+      });
+      html = html.replace(/__MATH_INLINE_(\d+)__/g, (_, idx) => {
+        const f = escapeHtml(mathStore[Number(idx)].formula);
+        return `<code>$${f}$</code>`;
+      });
+    }
+
     return html;
+  }
+
+  function renderMath(formula, displayMode) {
+    try {
+      return window.katex.renderToString(formula.trim(), {
+        displayMode,
+        throwOnError: false,
+        strict: "ignore",
+        output: "html",
+        trust: true
+      });
+    } catch {
+      const safe = escapeHtml(formula.trim());
+      if (displayMode) {
+        return `<pre style="background:#eee;padding:6px;border-radius:4px;white-space:pre-wrap;">$$${safe}$$</pre>`;
+      } else {
+        return `<code>$${safe}$</code>`;
+      }
+    }
   }
 
   // 因为弹窗放在 ShadowDOM 里，样式必须通过 JS 拼接 <style> 标签注入，
@@ -402,41 +514,39 @@
       if (!body) return;
 
       if (!STATE.streamStarted) {
-        // 首个 chunk：移除 loading，创建新的 assistant 气泡
         STATE.streamStarted = true;
-        if (message.source === 'EXPLAIN') {
-          body.innerHTML = '';
-        }
+        if (message.source === 'EXPLAIN') body.innerHTML = '';
         const div = document.createElement('div');
         div.className = 'explainer-message explainer-message-assistant';
         div.innerHTML = `<div class="explainer-bubble"></div>`;
         body.appendChild(div);
         STATE.streamBubbleEl = div.querySelector('.explainer-bubble');
       }
-
-      // 直接更新气泡 innerHTML，不重建 DOM（避免闪烁）
+      // 仅纯文本填充，不渲染HTML/公式，保护占位符缓存
       if (STATE.streamBubbleEl) {
-        STATE.streamBubbleEl.innerHTML = formatTextToHtml(message.accumulated);
+        STATE.streamBubbleEl.textContent = message.accumulated;
         body.scrollTop = body.scrollHeight;
       }
     } else if (message.type === 'STREAM_DONE') {
       STATE.streamStarted = false;
-      if (STATE.streamBubbleEl && message.source === 'EXPLAIN') {
-        STATE.conversationMessages.push({ role: 'assistant', content: message.fullContent });
-      }
-      if (STATE.streamBubbleEl && message.source === 'CHAT') {
-        STATE.conversationMessages.push({ role: 'assistant', content: message.fullContent });
-        const input = STATE.shadowRoot.getElementById('explainer-input');
-        if (input) input.focus();
+      if (STATE.streamBubbleEl) {
+        // 完整文本一次性格式化渲染，公式完整无截断
+        STATE.streamBubbleEl.innerHTML = formatTextToHtml(message.fullContent);
+        if (message.source === 'EXPLAIN') {
+          STATE.conversationMessages.push({ role: 'assistant', content: message.fullContent });
+        }
+        if (message.source === 'CHAT') {
+          STATE.conversationMessages.push({ role: 'assistant', content: message.fullContent });
+          const input = STATE.shadowRoot.getElementById('explainer-input');
+          if (input) input.focus();
+        }
       }
       STATE.streamBubbleEl = null;
       STATE.isProcessing = false;
     } else if (message.type === 'STREAM_ERROR') {
       STATE.streamStarted = false;
       STATE.streamBubbleEl = null;
-      if (STATE.shadowRoot) {
-        appendAssistantMessage(`❌ ${message.error}`);
-      }
+      if (STATE.shadowRoot) appendAssistantMessage(`❌ ${message.error}`);
       STATE.isProcessing = false;
     }
   });
@@ -806,6 +916,12 @@
     const style = document.createElement('style');
     style.textContent = getPopupStyles();
     shadow.appendChild(style);
+
+    // KaTeX CSS 必须在 Shadow DOM 内加载（样式隔离不能穿透）
+    const katexLink = document.createElement('link');
+    katexLink.rel = 'stylesheet';
+    katexLink.href = chrome.runtime.getURL('lib/katex.min.css');
+    shadow.appendChild(katexLink);
 
     const popupInner = document.createElement('div');
     popupInner.className = 'explainer-popup';

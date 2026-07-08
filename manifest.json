@@ -12,10 +12,16 @@
   "background": {
     "service_worker": "background.js"
   },
+  "web_accessible_resources": [
+    {
+      "resources": ["lib/katex.min.js", "lib/katex.min.css", "lib/fonts/*"],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "js": ["lib/katex.min.js", "content.js"],
       "css": ["content.css"],
       "run_at": "document_end"
     }
