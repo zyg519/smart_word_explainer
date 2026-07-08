@@ -88,6 +88,20 @@
     isDragging: false
   };
 
+  // 从 storage 读取高级配置，上下文截取长度等设置可实时生效
+  let maxContextLength = 2000;
+  chrome.storage.local.get(['explainerConfig'], (result) => {
+    if (result.explainerConfig && result.explainerConfig.maxContextLength) {
+      maxContextLength = result.explainerConfig.maxContextLength;
+    }
+  });
+  chrome.storage.onChanged.addListener((changes) => {
+    if (changes.explainerConfig && changes.explainerConfig.newValue) {
+      const cfg = changes.explainerConfig.newValue;
+      if (cfg.maxContextLength) maxContextLength = cfg.maxContextLength;
+    }
+  });
+
   function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
@@ -243,6 +257,11 @@
 
   // 全局按键监听：增加弹窗焦点隔离，输入框编辑不影响页面
   document.addEventListener('keydown', (e) => {
+
+    // if (e.key === 'Escape' && STATE.popupEl) {         // 按下键盘 Esc 键，且弹窗存在时，直接销毁弹窗, 写在最前面：无论光标在哪，按 ESC 都能关掉弹窗
+    //   destroyPopup();
+    //   return;
+    // }
     // 判断焦点是否落在弹窗内部，是则直接阻断全局按键逻辑
     if (STATE.popupEl && STATE.shadowRoot) {
       const activeEl = document.activeElement;
@@ -270,9 +289,7 @@
       }
       return;
     }
-    if (e.key === 'Escape' && STATE.popupEl) {
-      destroyPopup();
-    }
+    
   });
   document.addEventListener('keyup', e => {
     if (e.key === 'Control') {
@@ -337,7 +354,7 @@
     return null;
   }
   function truncateContext(full, target) {
-    const max = 2000;
+    const max = maxContextLength;
     if (full.length <= max) {
       return full;
     }
