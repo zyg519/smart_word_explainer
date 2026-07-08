@@ -128,7 +128,8 @@
     isDragging: false,                        // 标记用户是否正在拖拽弹窗标题栏移动窗口
     streamStarted: false,                     // 流式输出标记，区分首次创建气泡和后续更新
     streamBubbleEl: null,                     // 流式输出时当前 assistant 气泡的 DOM 引用
-    katexReady: false                         // KaTeX 库是否已加载完成
+    katexReady: false,                        // KaTeX 库是否已加载完成
+    lastRawResponse: ''                       // 最后一条 AI 回复的原始 Markdown 文本
   };
 
   // Shadow DOM:
@@ -287,22 +288,67 @@
   }
 
   function renderMath(formula, displayMode) {
+    const raw = formula.trim();
     try {
-      return window.katex.renderToString(formula.trim(), {
+      const rendered = window.katex.renderToString(raw, {
         displayMode,
         throwOnError: false,
         strict: "ignore",
         output: "html",
         trust: true
       });
+      // 包裹 data-formula 保留原始文本，hover 可查看，右键可复制
+      const tag = displayMode ? 'div' : 'span';
+      return `<${tag} class="math-rendered" data-formula="${escapeHtml(raw)}" title="原始公式: ${escapeHtml(raw)}">${rendered}</${tag}>`;
     } catch {
-      const safe = escapeHtml(formula.trim());
+      const safe = escapeHtml(raw);
       if (displayMode) {
-        return `<pre style="background:#eee;padding:6px;border-radius:4px;white-space:pre-wrap;">$$${safe}$$</pre>`;
+        return `<pre class="math-fallback" data-formula="${safe}">$$${safe}$$</pre>`;
       } else {
-        return `<code>$${safe}$</code>`;
+        return `<code class="math-fallback" data-formula="${safe}">$${safe}$</code>`;
       }
     }
+  }
+
+  // DOM → Markdown 反向转换（复制按钮用）
+  function domToMarkdown(el) {
+    let out = '';
+    for (const child of el.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        out += child.textContent;
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        const tag = child.tagName.toLowerCase();
+        if (child.classList.contains('math-rendered')) {
+          const formula = child.getAttribute('data-formula') || child.textContent;
+          out += (tag === 'div') ? `$$\n${formula}\n$$` : `$${formula}$`;
+        } else if (tag === 'strong' || tag === 'b') {
+          out += '**' + domToMarkdown(child) + '**';
+        } else if (tag === 'em' || tag === 'i') {
+          out += '*' + domToMarkdown(child) + '*';
+        } else if (tag === 'code') {
+          out += '`' + child.textContent + '`';
+        } else if (tag === 'pre') {
+          out += '\n```\n' + child.textContent + '\n```\n';
+        } else if (tag === 'a') {
+          out += '[' + child.textContent + '](' + child.getAttribute('href') + ')';
+        } else if (tag === 'h2') {
+          out += '\n## ' + domToMarkdown(child) + '\n';
+        } else if (tag === 'h3') {
+          out += '\n### ' + domToMarkdown(child) + '\n';
+        } else if (tag === 'h4') {
+          out += '\n#### ' + domToMarkdown(child) + '\n';
+        } else if (tag === 'li') {
+          out += '- ' + domToMarkdown(child) + '\n';
+        } else if (tag === 'br') {
+          out += '\n';
+        } else if (tag === 'p') {
+          out += domToMarkdown(child) + '\n\n';
+        } else {
+          out += domToMarkdown(child);
+        }
+      }
+    }
+    return out.trim();
   }
 
   // 因为弹窗放在 ShadowDOM 里，样式必须通过 JS 拼接 <style> 标签注入，
@@ -364,6 +410,14 @@
       .explainer-bubble li { margin-bottom:2px; }
       .explainer-bubble h2, .explainer-bubble h3, .explainer-bubble h4 { margin:8px 0 4px 0; }
       .explainer-bubble pre { margin:6px 0; }
+      .math-rendered { cursor:help; transition: background 0.2s; }
+      .math-rendered:hover { background:rgba(37,99,235,0.06); }
+      .explainer-copy-btn {
+        align-self:flex-start; background:none; border:1px solid #e0e0e0;
+        border-radius:6px; cursor:pointer; font-size:12px; padding:2px 6px;
+        margin-top:2px; opacity:0.5; transition:opacity 0.15s;
+      }
+      .explainer-copy-btn:hover { opacity:1; border-color:#2563eb; }
       .explainer-bubble strong { color:#1e40af;font-weight:600; }
       .explainer-bubble code { background:rgba(0,0,0,0.06);padding:2px 6px;border-radius:4px;font-family:SF Mono,Fira Code,monospace;font-size:0.9em; }
       .explainer-loading { display:flex;align-items:center;justify-content:center;gap:10px;padding:24px;color:#9ca3af;font-size:13px; }
@@ -380,6 +434,9 @@
         .explainer-popup { background:#1e1e1e;border-color:#3a3a3a;box-shadow:0 8px 32px rgba(0,0,0,0.4);color:#e0e0e0; }
         .explainer-header { background:#252525;border-bottom-color:#3a3a3a; }
         .explainer-bubble pre { background:#333; }
+        .math-rendered:hover { background:rgba(147,197,253,0.1); }
+        .explainer-copy-btn { border-color:#444; color:#ccc; }
+        .explainer-copy-btn:hover { border-color:#93c5fd; }
         .explainer-title { color:#e0e0e0; }
         .explainer-btn-icon { color:#999; }
         .explainer-btn-icon:hover { background:#3a3a3a;color:#e0e0e0; }
@@ -402,7 +459,10 @@
       return;
     }
     const body = STATE.shadowRoot.getElementById('explainer-body');
-    body.innerHTML = `<div class="explainer-message explainer-message-assistant"><div class="explainer-bubble">${formatTextToHtml(text)}</div></div>`;
+    body.innerHTML = `<div class="explainer-message explainer-message-assistant">
+      <div class="explainer-bubble">${formatTextToHtml(text)}</div>
+      <button class="explainer-copy-btn" title="复制原始 Markdown">📋</button>
+    </div>`;
     body.scrollTop = body.scrollHeight;
   }
 
@@ -427,7 +487,8 @@
     const body = STATE.shadowRoot.getElementById('explainer-body');
     const div = document.createElement('div');
     div.className = 'explainer-message explainer-message-assistant';
-    div.innerHTML = `<div class="explainer-bubble">${formatTextToHtml(text)}</div>`;
+    div.innerHTML = `<div class="explainer-bubble">${formatTextToHtml(text)}</div>
+      <button class="explainer-copy-btn" title="复制原始 Markdown">📋</button>`;
     body.appendChild(div);
     body.scrollTop = body.scrollHeight;
   }
@@ -552,8 +613,17 @@
     } else if (message.type === 'STREAM_DONE') {
       STATE.streamStarted = false;
       if (STATE.streamBubbleEl) {
-        // 完整文本一次性格式化渲染，公式完整无截断
+        STATE.lastRawResponse = message.fullContent;
         STATE.streamBubbleEl.innerHTML = formatTextToHtml(message.fullContent);
+        // 流式结束后追加复制按钮
+        let copyBtn = STATE.streamBubbleEl.parentElement.querySelector('.explainer-copy-btn');
+        if (!copyBtn) {
+          copyBtn = document.createElement('button');
+          copyBtn.className = 'explainer-copy-btn';
+          copyBtn.title = '复制原始 Markdown';
+          copyBtn.textContent = '📋';
+          STATE.streamBubbleEl.parentElement.appendChild(copyBtn);
+        }
         if (message.source === 'EXPLAIN') {
           STATE.conversationMessages.push({ role: 'assistant', content: message.fullContent });
         }
@@ -716,6 +786,7 @@
           // 非流式模式：一次性拿到完整结果
           STATE.systemPrompt = res.data.systemPrompt;
           STATE.conversationMessages = res.data.messages.filter(m => m.role !== 'system');
+          STATE.lastRawResponse = res.data.explanation;
           updatePopupContent(res.data.explanation);
           STATE.isProcessing = false;
         }
@@ -802,6 +873,21 @@
     popupInner.addEventListener('click', e => e.stopPropagation());
 
     closeBtn.addEventListener('click', destroyPopup);
+
+    // 复制按钮：将渲染后的 DOM 反向转为 Markdown，公式用 data-formula 还原
+    shadow.getElementById('explainer-body').addEventListener('click', (e) => {
+      const btn = e.target.closest('.explainer-copy-btn');
+      if (!btn) return;
+      const bubble = btn.parentElement.querySelector('.explainer-bubble');
+      const md = bubble ? domToMarkdown(bubble) : '';
+      navigator.clipboard.writeText(md).then(() => {
+        btn.textContent = '✅';
+        setTimeout(() => { btn.textContent = '📋'; }, 1500);
+      }).catch(() => {
+        btn.textContent = '❌';
+        setTimeout(() => { btn.textContent = '📋'; }, 1500);
+      });
+    });
     clearBtn.addEventListener('click', async () => {
       STATE.conversationMessages = [];
       const body = shadow.getElementById('explainer-body');
@@ -847,6 +933,7 @@
           } else {
             // 非流式：一次性显示
             STATE.conversationMessages.push({ role: 'assistant', content: res.data.reply });
+            STATE.lastRawResponse = res.data.reply;
             appendAssistantMessage(res.data.reply);
             STATE.isProcessing = false;
             inputEl.focus();
