@@ -5,7 +5,7 @@
 
   <a href="https://github.com/yourname/explain_module"><img src="https://img.shields.io/badge/Chrome-88%2B-4285F4?logo=googlechrome&logoColor=white" alt="Chrome 88+"></a>
   <a href="https://github.com/yourname/explain_module"><img src="https://img.shields.io/badge/Manifest_V3-FF6F00?logo=googlechrome&logoColor=white" alt="Manifest V3"></a>
-  <a href="https://github.com/yourname/explain_module/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="License MIT"></a>
+  <a href="https://github.com/yourname/explain_module/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-CC_BY--NC_4.0-2ea44f" alt="License CC BY-NC 4.0"></a>
   <a href="https://github.com/yourname/explain_module"><img src="https://img.shields.io/badge/dependencies-0-2ea44f" alt="Zero Dependencies"></a>
   <br>
   <a href="https://github.com/yourname/explain_module"><img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?logo=openai&logoColor=white" alt="OpenAI Compatible"></a>
@@ -30,9 +30,9 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/yourname/explain_module.git
+git clone https://github.com/zyg519/smart_word_explainer.git
 
-# 然后在 Chrome 中加载 explain_module 目录
+# 然后在 Chrome 中加载 smart_word_explainer 目录
 ```
 
 </details>
@@ -179,7 +179,7 @@ Chrome 88+（Manifest V3）。Edge、Brave 等所有 Chromium 内核浏览器均
 
 ## 📜 许可
 
-本项目采用 [MIT](LICENSE) 许可协议。你可以自由使用、修改和分发。
+本项目采用 [CC BY-NC 4.0](LICENSE) 许可协议。允许自由使用、修改和分享，但**禁止用于商业目的**。
 
 ## 📞 反馈
 

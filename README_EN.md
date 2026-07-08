@@ -5,7 +5,7 @@
 
   <a href="https://github.com/yourname/explain_module"><img src="https://img.shields.io/badge/Chrome-88%2B-4285F4?logo=googlechrome&logoColor=white" alt="Chrome 88+"></a>
   <a href="https://github.com/yourname/explain_module"><img src="https://img.shields.io/badge/Manifest_V3-FF6F00?logo=googlechrome&logoColor=white" alt="Manifest V3"></a>
-  <a href="https://github.com/yourname/explain_module/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="License MIT"></a>
+  <a href="https://github.com/yourname/explain_module/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-CC_BY--NC_4.0-2ea44f" alt="License CC BY-NC 4.0"></a>
   <a href="https://github.com/yourname/explain_module"><img src="https://img.shields.io/badge/dependencies-0-2ea44f" alt="Zero Dependencies"></a>
   <br>
   <a href="https://github.com/yourname/explain_module"><img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?logo=openai&logoColor=white" alt="OpenAI Compatible"></a>
@@ -30,9 +30,9 @@ Quickstart guide for installation and usage. See below for detailed configuratio
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourname/explain_module.git
+git clone https://github.com/zyg519/smart_word_explainer.git
 
-# Then load the explain_module directory in Chrome
+# Then load the smart_word_explainer directory in Chrome
 ```
 
 </details>
@@ -179,7 +179,7 @@ Chrome 88+ (Manifest V3). All Chromium-based browsers (Edge, Brave, etc.) are su
 
 ## 📜 License
 
-This project is licensed under the [MIT](LICENSE) license. You are free to use, modify, and distribute it.
+This project is licensed under [CC BY-NC 4.0](LICENSE). You are free to use, modify, and share it, but **commercial use is not permitted**.
 
 ## 📞 Contact
 
