@@ -17,7 +17,8 @@ const DEFAULT_CONFIG = {
   maxTokens: 1024,
   // 新增：思考开关 enabled / disabled
   thinkingType: "disabled",
-  reasoningEffort: "high"
+  reasoningEffort: "high",
+  streamEnabled: false
 };
 
 // 监听来自 content script 的消息
@@ -25,15 +26,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   DEBUG.event('收到消息', { type: message.type, from: sender.url });
 
   if (message.type === 'EXPLAIN') {
-    handleExplain(message.payload)
-      .then(result => {
-        DEBUG.log('Explain', '解释完成, 长度:', result.explanation?.length);
-        sendResponse({ success: true, data: result });
-      })
-      .catch(error => {
-        DEBUG.error('Explain', error.message);
-        sendResponse({ success: false, error: error.message });
-      });
+    handleExplainStreamOrNot(message.payload, sender.tab.id, sendResponse);
     return true;
   }
 
@@ -52,15 +45,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'CHAT') {
-    handleChat(message.payload)
-      .then(result => {
-        DEBUG.log('Chat', '追问完成, 长度:', result.reply?.length);
-        sendResponse({ success: true, data: result });
-      })
-      .catch(error => {
-        DEBUG.error('Chat', error.message);
-        sendResponse({ success: false, error: error.message });
-      });
+    handleChatStreamOrNot(message.payload, sender.tab.id, sendResponse);
     return true;
   }
 });
@@ -90,136 +75,188 @@ function buildSystemPrompt(contextText, selectedText, customPrompt) {
   return prompt;
 }
 
-// 处理初次解释请求
-async function handleExplain(payload) {
-  const { selectedText, contextText, conversationHistory } = payload;
-  DEBUG.log('Explain', '开始解释, 选中:', selectedText?.substring(0, 50));
-
-  const config = await getConfig();
-
-  if (!config.apiKey) {
-    throw new Error('请先在扩展弹出窗口中配置 API Key');
-  }
-
-  const systemPrompt = buildSystemPrompt(contextText, selectedText, config.systemPrompt);
-
-  const messages = [
-    { role: 'system', content: systemPrompt },
-  ];
-
-  if (conversationHistory && conversationHistory.length > 0) {
-    messages.push(...conversationHistory);
-  }
-
-  messages.push({
-    role: 'user',
-    content: `请解读我选中的内容："${selectedText}"`
-  });
-
-  const startTime = Date.now();
-  const response = await callLLMAPI(config, messages);
-  const duration = Date.now() - startTime;
-  DEBUG.log('Explain', `API 耗时: ${duration}ms`);
-
-  return {
-    explanation: response,
-    systemPrompt: systemPrompt,
-    messages: [
-      ...messages,
-      { role: 'assistant', content: response }
-    ]
-  };
-}
-
-// 处理对话追问
-async function handleChat(payload) {
-  const { messages, systemPrompt } = payload;
-  DEBUG.log('Chat', '追问消息数:', messages?.length, '| 最后一条:', messages?.[messages.length - 1]?.content?.substring(0, 30));
-
-  const config = await getConfig();
-
-  if (!config.apiKey) {
-    throw new Error('请先在扩展弹出窗口中配置 API Key');
-  }
-
-  const fullMessages = [
-    { role: 'system', content: systemPrompt },
-    ...messages
-  ];
-
-  const startTime = Date.now();
-  const response = await callLLMAPI(config, fullMessages);
-  const duration = Date.now() - startTime;
-  DEBUG.log('Chat', `API 耗时: ${duration}ms`);
-
-  return { reply: response };
-}
-
-// 调用大模型 API（OpenAI 兼容格式）
-async function callLLMAPI(config, messages) {
-  const headers = {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${config.apiKey}`
-  };
-
+// 构建 API 请求体（流式/非流式共用）
+function buildRequestBody(config, messages, stream) {
   const body = {
     model: config.model,
     messages: messages,
     temperature: config.temperature || 0.7,
     max_tokens: config.maxTokens || 1024,
-    stream: false,
-    // 仅当思考开启时才传 effort，关闭则只传type:disabled
-	  extra_body: {
-	    thinking: {
-	      type: config.thinkingType
-	    }
-	  }
+    stream: stream,
+    extra_body: {
+      thinking: { type: config.thinkingType }
+    }
   };
-
-  // 思考启用时追加 reasoning_effort 映射规则
   if (config.thinkingType === "enabled") {
     let effort = config.reasoningEffort || "high";
-    // 规则映射 low/medium → high；xhigh → max
-    if (["low", "medium"].includes(effort)) {
-      effort = "high";
-    } else if (effort === "xhigh") {
-      effort = "max";
-    }
+    if (["low", "medium"].includes(effort)) effort = "high";
+    else if (effort === "xhigh") effort = "max";
     body.reasoning_effort = effort;
   }
+  return body;
+}
 
-  DEBUG.request('POST', config.apiEndpoint, headers, {
-    ...body,
-    messages: `[${messages.length}条消息]`,
-    model: body.model
-  });
+// 统一入口：根据 config.streamEnabled 走流式或非流式
+async function handleExplainStreamOrNot(payload, tabId, sendResponse) {
+  const { selectedText, contextText, conversationHistory } = payload;
+  DEBUG.log('Explain', '开始解释, 选中:', selectedText?.substring(0, 50));
+
+  const config = await getConfig();
+  if (!config.apiKey) {
+    sendResponse({ success: false, error: '请先在扩展弹出窗口中配置 API Key' });
+    return;
+  }
+
+  const systemPrompt = buildSystemPrompt(contextText, selectedText, config.systemPrompt);
+  const messages = [{ role: 'system', content: systemPrompt }];
+  if (conversationHistory && conversationHistory.length > 0) messages.push(...conversationHistory);
+  messages.push({ role: 'user', content: `请解读我选中的内容："${selectedText}"` });
+
+  if (config.streamEnabled) {
+    // 流式：立即确认，然后逐块推送
+    sendResponse({ success: true, streaming: true, systemPrompt });
+    const fullMessages = messages;
+    streamToTab(config, fullMessages, tabId, 'EXPLAIN')
+      .catch(err => {
+        DEBUG.error('Explain', err.message);
+        chrome.tabs.sendMessage(tabId, { type: 'STREAM_ERROR', error: err.message });
+      });
+  } else {
+    // 非流式：等待完整结果
+    try {
+      const startTime = Date.now();
+      const response = await callLLMAPI(config, messages);
+      DEBUG.log('Explain', `API 耗时: ${Date.now() - startTime}ms`);
+      sendResponse({
+        success: true,
+        data: {
+          explanation: response,
+          systemPrompt,
+          messages: [...messages, { role: 'assistant', content: response }]
+        }
+      });
+    } catch (error) {
+      sendResponse({ success: false, error: error.message });
+    }
+  }
+}
+
+// 统一入口：对话追问流式/非流式
+async function handleChatStreamOrNot(payload, tabId, sendResponse) {
+  const { messages, systemPrompt } = payload;
+  DEBUG.log('Chat', '追问消息数:', messages?.length);
+
+  const config = await getConfig();
+  if (!config.apiKey) {
+    sendResponse({ success: false, error: '请先在扩展弹出窗口中配置 API Key' });
+    return;
+  }
+
+  const fullMessages = [{ role: 'system', content: systemPrompt }, ...messages];
+
+  if (config.streamEnabled) {
+    sendResponse({ success: true, streaming: true });
+    streamToTab(config, fullMessages, tabId, 'CHAT')
+      .catch(err => {
+        DEBUG.error('Chat', err.message);
+        chrome.tabs.sendMessage(tabId, { type: 'STREAM_ERROR', error: err.message });
+      });
+  } else {
+    try {
+      const startTime = Date.now();
+      const response = await callLLMAPI(config, fullMessages);
+      DEBUG.log('Chat', `API 耗时: ${Date.now() - startTime}ms`);
+      sendResponse({ success: true, data: { reply: response } });
+    } catch (error) {
+      sendResponse({ success: false, error: error.message });
+    }
+  }
+}
+
+// 流式 SSE 推送到 tab
+async function streamToTab(config, messages, tabId, source) {
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${config.apiKey}`
+  };
+  const body = buildRequestBody(config, messages, true);
+
+  DEBUG.request('POST', config.apiEndpoint, headers, { ...body, messages: `[${messages.length}条消息]` });
 
   const response = await fetch(config.apiEndpoint, {
-    method: 'POST',
-    headers: headers,
-    body: JSON.stringify(body)
+    method: 'POST', headers, body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    let errMsg;
+    try { errMsg = JSON.parse(errText).error?.message || `HTTP ${response.status}`; }
+    catch { errMsg = `HTTP ${response.status}`; }
+    throw new Error(`API 调用失败: ${errMsg}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let fullContent = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data: ')) continue;
+      const data = trimmed.slice(6);
+      if (data === '[DONE]') {
+        chrome.tabs.sendMessage(tabId, { type: 'STREAM_DONE', source, fullContent });
+        return;
+      }
+      try {
+        const parsed = JSON.parse(data);
+        const chunk = parsed.choices?.[0]?.delta?.content;
+        if (chunk) {
+          fullContent += chunk;
+          chrome.tabs.sendMessage(tabId, { type: 'STREAM_CHUNK', source, chunk, accumulated: fullContent });
+        }
+      } catch (e) { /* skip malformed SSE lines */ }
+    }
+  }
+  // stream ended without [DONE]
+  chrome.tabs.sendMessage(tabId, { type: 'STREAM_DONE', source, fullContent });
+}
+
+// 非流式 API 调用
+async function callLLMAPI(config, messages) {
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${config.apiKey}`
+  };
+  const body = buildRequestBody(config, messages, false);
+
+  DEBUG.request('POST', config.apiEndpoint, headers, { ...body, messages: `[${messages.length}条消息]` });
+
+  const response = await fetch(config.apiEndpoint, {
+    method: 'POST', headers, body: JSON.stringify(body)
   });
 
   if (!response.ok) {
     const errorText = await response.text();
     let errorMessage;
     try {
-      const errorJson = JSON.parse(errorText);
-      errorMessage = errorJson.error?.message || errorJson.message || `HTTP ${response.status}`;
+      errorMessage = JSON.parse(errorText).error?.message || `HTTP ${response.status}`;
     } catch {
       errorMessage = `HTTP ${response.status}: ${errorText.substring(0, 200)}`;
     }
-    DEBUG.error('API', `请求失败: ${errorMessage}`);
     throw new Error(`API 调用失败: ${errorMessage}`);
   }
 
   const data = await response.json();
   const content = data.choices?.[0]?.message?.content;
-  if (!content) {
-    DEBUG.error('API', '返回格式异常:', JSON.stringify(data).substring(0, 200));
-    throw new Error('API 返回格式异常，未找到回复内容');
-  }
-
-  DEBUG.response(response.status, { content: content.substring(0, 100) + '...' }, 0);
+  if (!content) throw new Error('API 返回格式异常，未找到回复内容');
   return content;
 }

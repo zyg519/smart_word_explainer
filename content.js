@@ -125,7 +125,9 @@
     systemPrompt: '',                        // 保存后台返回 / 用户自定义的系统提示词，传给 AI 接口
     selectedText: '',                        // 用户最初选中、唤起弹窗的原文
     contextText: '',                         // 选中文字所在段落的上下文截取文本
-    isDragging: false                        // 标记用户是否正在拖拽弹窗标题栏移动窗口
+    isDragging: false,                        // 标记用户是否正在拖拽弹窗标题栏移动窗口
+    streamStarted: false,                     // 流式输出标记，区分首次创建气泡和后续更新
+    streamBubbleEl: null                      // 流式输出时当前 assistant 气泡的 DOM 引用
   };
 
   // Shadow DOM:
@@ -390,6 +392,55 @@
     STATE.altPressed = false;
   });
 
+  // 监听来自 background 的流式消息（STREAM_CHUNK / STREAM_DONE / STREAM_ERROR）
+  chrome.runtime.onMessage.addListener((message) => {
+    if (!STATE.shadowRoot) return;
+
+    if (message.type === 'STREAM_CHUNK') {
+      if (!STATE.shadowRoot) return;
+      const body = STATE.shadowRoot.getElementById('explainer-body');
+      if (!body) return;
+
+      if (!STATE.streamStarted) {
+        // 首个 chunk：移除 loading，创建新的 assistant 气泡
+        STATE.streamStarted = true;
+        if (message.source === 'EXPLAIN') {
+          body.innerHTML = '';
+        }
+        const div = document.createElement('div');
+        div.className = 'explainer-message explainer-message-assistant';
+        div.innerHTML = `<div class="explainer-bubble"></div>`;
+        body.appendChild(div);
+        STATE.streamBubbleEl = div.querySelector('.explainer-bubble');
+      }
+
+      // 直接更新气泡 innerHTML，不重建 DOM（避免闪烁）
+      if (STATE.streamBubbleEl) {
+        STATE.streamBubbleEl.innerHTML = formatTextToHtml(message.accumulated);
+        body.scrollTop = body.scrollHeight;
+      }
+    } else if (message.type === 'STREAM_DONE') {
+      STATE.streamStarted = false;
+      if (STATE.streamBubbleEl && message.source === 'EXPLAIN') {
+        STATE.conversationMessages.push({ role: 'assistant', content: message.fullContent });
+      }
+      if (STATE.streamBubbleEl && message.source === 'CHAT') {
+        STATE.conversationMessages.push({ role: 'assistant', content: message.fullContent });
+        const input = STATE.shadowRoot.getElementById('explainer-input');
+        if (input) input.focus();
+      }
+      STATE.streamBubbleEl = null;
+      STATE.isProcessing = false;
+    } else if (message.type === 'STREAM_ERROR') {
+      STATE.streamStarted = false;
+      STATE.streamBubbleEl = null;
+      if (STATE.shadowRoot) {
+        appendAssistantMessage(`❌ ${message.error}`);
+      }
+      STATE.isProcessing = false;
+    }
+  });
+
   // 实现组合快捷键划词：按住 Ctrl + Alt，鼠标拖动选中文字，松开鼠标自动唤起解读弹窗
   document.addEventListener('mouseup', (e) => {
     if (STATE.popupEl && STATE.popupEl.isConnected) {
@@ -525,16 +576,24 @@
         payload: { selectedText, contextText, conversationHistory: [] }
       });
       if (res.success) {
-        STATE.systemPrompt = res.data.systemPrompt;
-        STATE.conversationMessages = res.data.messages.filter(m => m.role !== 'system');
-        updatePopupContent(res.data.explanation);
+        if (res.streaming) {
+          // 流式模式：响应立即返回，systemPrompt 先存好，内容由 STREAM_CHUNK 逐步填充
+          STATE.systemPrompt = res.systemPrompt;
+          STATE.streamingMessageType = 'EXPLAIN';
+        } else {
+          // 非流式模式：一次性拿到完整结果
+          STATE.systemPrompt = res.data.systemPrompt;
+          STATE.conversationMessages = res.data.messages.filter(m => m.role !== 'system');
+          updatePopupContent(res.data.explanation);
+          STATE.isProcessing = false;
+        }
       } else {
         updatePopupContent(`❌ 解释失败：${res.error}`);
+        STATE.isProcessing = false;
       }
     } catch (err) {
       updatePopupContent(formatError(err));
       DBG.error('Explain', err);
-    } finally {
       STATE.isProcessing = false;
     }
   }
@@ -650,17 +709,24 @@
         });
         removeLoadingMessage(loadId);
         if (res.success) {
-          STATE.conversationMessages.push({ role: 'assistant', content: res.data.reply });
-          appendAssistantMessage(res.data.reply);
+          if (res.streaming) {
+            // 流式：内容由 STREAM_CHUNK 逐步追加
+            STATE.streamingMessageType = 'CHAT';
+          } else {
+            // 非流式：一次性显示
+            STATE.conversationMessages.push({ role: 'assistant', content: res.data.reply });
+            appendAssistantMessage(res.data.reply);
+            STATE.isProcessing = false;
+            inputEl.focus();
+          }
         } else {
           appendAssistantMessage(`❌ ${res.error}`);
+          STATE.isProcessing = false;
         }
       } catch (err) {
         removeLoadingMessage(loadId);
         appendAssistantMessage(formatError(err));
-      } finally {
         STATE.isProcessing = false;
-        inputEl.focus();
       }
     }
 

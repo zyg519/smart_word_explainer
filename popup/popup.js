@@ -14,6 +14,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const tempValue = document.getElementById('temp-value');
   const maxTokensInput = document.getElementById('max-tokens');
   const maxContextInput = document.getElementById('max-context');
+  const streamEnabledCheckbox = document.getElementById('stream-enabled');
   const btnSave = document.getElementById('btn-save');
   const btnTest = document.getElementById('btn-test');
   const debugCheckbox = document.getElementById('debug-enabled');
@@ -39,6 +40,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       tempValue.textContent = config.temperature || 0.7;
       maxTokensInput.value = config.maxTokens || 1024;
       maxContextInput.value = config.maxContextLength || 2000;
+      streamEnabledCheckbox.checked = config.streamEnabled || false;
     }
   } catch (error) {
     showStatus('加载配置失败: ' + error.message, 'error');
@@ -74,7 +76,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       systemPrompt: systemPromptInput.value.trim(),
       temperature: parseFloat(temperatureInput.value),
       maxTokens: parseInt(maxTokensInput.value) || 1024,
-      maxContextLength: parseInt(maxContextInput.value) || 2000
+      maxContextLength: parseInt(maxContextInput.value) || 2000,
+      streamEnabled: streamEnabledCheckbox.checked
     };
 
     try {
