@@ -542,7 +542,14 @@
     if (STATE.popupEl && STATE.shadowRoot) {          // 弹窗存在才执行判断
       const activeEl = document.activeElement;        // 当前页面光标聚焦的 DOM（输入框、按钮等）
       const inPopupScope = STATE.shadowRoot.contains(activeEl) || STATE.popupEl.contains(activeEl);
-      if (inPopupScope) {
+      // ⚠️ 例外：Ctrl / Alt 这两个「划词触发组合键」必须放行。
+      // 弹窗打开 300ms 后会自动聚焦输入框，若这里连着 Ctrl/Alt 一起挡掉，
+      // STATE.ctrlPressed / altPressed 就永远停在 false，用户按住 Ctrl+Alt 在页面上
+      // 拖选新词时，下面 mouseup 的判断认不出这个手势 —— 表现为「弹窗一开着，划词就没反应，
+      // 必须先手动关掉弹窗」。注意：这两个键在这里只更新按键状态、不触发解读，
+      // 真正触发还要求页面存在非空选区（输入框有焦点时选区为空），不会误触发。
+      const isTriggerKey = e.key === 'Control' || e.key === 'Alt';
+      if (inPopupScope && !isTriggerKey) {
         return;
       }
     }
@@ -557,7 +564,10 @@
         e.preventDefault();
         if (STATE.ctrlPressed) {
           const sel = window.getSelection();
-          if (sel && sel.toString().trim() && !STATE.isProcessing && !STATE.popupEl) {
+          // 这里不再要求「没有弹窗」：已经有弹窗时也允许触发，新解读会替换掉旧弹窗，
+          // 并继承它的锁定状态（由 showPopup 负责继承）。
+          // 唯一要排除的是「选区落在弹窗内部」—— 用户选中了弹窗里的文字，不该被当成新的划词目标。
+          if (sel && sel.toString().trim() && !STATE.isProcessing && !isSelectionInPopup(sel)) {
             DBG.event('Alt键触发解释', sel.toString().trim().substring(0, 50));
             triggerExplanation();
           }
@@ -646,15 +656,21 @@
 
   // 实现组合快捷键划词：按住 Ctrl + Alt，鼠标拖动选中文字，松开鼠标自动唤起解读弹窗
   document.addEventListener('mouseup', (e) => {
-    if (STATE.popupEl && STATE.popupEl.isConnected) {
-      return;
-    }
     if (!STATE.ctrlPressed || !STATE.altPressed || STATE.isProcessing) {
       return;
     }
     const sel = window.getSelection();                // 获取当前鼠标选中的文本对象
     if (!sel || !sel.toString().trim()) {             // 取出选中文字并去除首尾空格
       return;                                         // 没有选中有效文字直接返回，不触发弹窗
+    }
+    // 这里不再因为「已经有弹窗」就直接返回 —— 新的一次划词应当替换掉旧弹窗，
+    // 并继承它的锁定状态（由 showPopup 负责继承）。只排除两种情况：
+    //   1. 选区落在弹窗内部（用户在弹窗里选字、或拖动标题栏顺带产生的选区）
+    //   2. 正在拖动弹窗（这次 mouseup 只是结束拖动，不该触发解读）
+    //      —— 拖动时 mouseup 的监听顺序是：本函数先跑（注册得早），拖动自己的收尾函数后跑，
+    //         所以此刻 STATE.isDragging 还是 true，判断有效。
+    if (isSelectionInPopup(sel) || STATE.isDragging) {
+      return;
     }
     DBG.event('鼠标选择触发', sel.toString().trim().substring(0, 50));
     triggerExplanation();
@@ -802,30 +818,51 @@
     }
   }
 
-  function positionPopup(host, rect) {
+  // 计算并写入弹窗位置。
+  //   rect     —— 本次划词的选区矩形，决定弹窗默认贴在哪儿
+  //   keepRect —— 旧弹窗的实际矩形；换词替换旧弹窗时传入，表示「沿用旧位置，别跳走」
+  function positionPopup(host, rect, keepRect) {
     const w = 420;
     const maxH = 500;
     const margin = 16;
-    let left = rect.left;
-    let top = rect.top;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
+    let left;
+    let top;
 
-    if (left + w > vw - margin) {
-      left = Math.max(margin, vw - w - margin);
-    }
-    if (left < margin) {
-      left = margin;
-    }
-    const selectionBottom = rect.top;
-    const selectionTop = rect.selectionTop || selectionBottom - 30;
-    if (selectionBottom + maxH + margin < vh) {
-      top = rect.top;
-    } else if (selectionTop - maxH - margin > 0) {
-      top = selectionTop - maxH - 8;
+    if (keepRect) {
+      // 沿用旧弹窗的左上角：用户可能已经把它拖到顺手的位置，换词时不该再跳回新选区旁边。
+      left = keepRect.left;
+      top = keepRect.top;
+
+      // 只做「别整个丢到屏幕外」的兜底：至少保证标题栏和一小段宽度还在视口内
+      //（换词之间用户可能缩小过窗口，或把弹窗拖到过屏幕外，那时旧位置就点不到了）。
+      // 这里故意不用「整体塞回视口」的严格钳制 —— 用户也可能是故意把弹窗停在偏下、
+      // 偏右的位置，换词时把它整个挪回来，同样属于「位置变了」。
+      const minVisible = 120;
+      left = Math.min(Math.max(left, margin - keepRect.width + minVisible), vw - minVisible);
+      top = Math.min(Math.max(top, margin), vh - 48);
     } else {
-      top = Math.max(margin, (vh - maxH) / 2);
+      // 首次划词：贴着选区放，并尽量不超出视口（这段逻辑保持不变）
+      left = rect.left;
+      top = rect.top;
+      if (left + w > vw - margin) {
+        left = Math.max(margin, vw - w - margin);
+      }
+      if (left < margin) {
+        left = margin;
+      }
+      const selectionBottom = rect.top;
+      const selectionTop = rect.selectionTop || selectionBottom - 30;
+      if (selectionBottom + maxH + margin < vh) {
+        top = rect.top;
+      } else if (selectionTop - maxH - margin > 0) {
+        top = selectionTop - maxH - 8;
+      } else {
+        top = Math.max(margin, (vh - maxH) / 2);
+      }
     }
+
     host.style.left = left + 'px';
     host.style.top = top + 'px';
     host.style.width = w + 'px';
@@ -836,6 +873,11 @@
     console.log('[DEBUG] 执行销毁弹窗');
     const backdrop = document.getElementById('explainer-backdrop');
     STATE.isDragging = false;
+    // 弹窗都没了，锁定状态就不该留着。
+    // （旧代码漏了这一句：锁定后关掉弹窗，STATE.popupLocked 一直是 true，下一个弹窗会带着
+    //   "脏锁定"启动 —— 遮罩是深色的、点外部却关不掉，而锁图标显示的还是"未锁定"。）
+    // 注意：showPopup 里要继承锁定状态，所以它必须在调用 destroyPopup 之前先把值存下来。
+    STATE.popupLocked = false;
     if (!STATE.popupEl || !STATE.popupEl.isConnected) {
       STATE.popupEl = null;
       STATE.shadowRoot = null;
@@ -853,6 +895,44 @@
       backdrop.remove();
     }
   }
+
+  // 统一应用「弹窗锁定」状态：STATE.popupLocked、锁图标、遮罩三者必须一起改，漏一个就会出现
+  // "图标显示已锁定、遮罩却还挡着页面"这种自相矛盾的界面。
+  // 抽成独立函数是因为它有两个调用方：锁定按钮（用户点击）和 showPopup（新弹窗继承旧弹窗的锁定状态）。
+  //   locked = true ：遮罩变透明且不拦截鼠标 —— 页面可以正常操作，点空白处也不会关掉弹窗
+  //   locked = false：遮罩变暗并拦截鼠标 —— 点空白处关闭弹窗
+  function applyLockState(locked) {
+    STATE.popupLocked = !!locked;
+    if (!STATE.shadowRoot) {
+      return;
+    }
+    const backdrop = document.getElementById('explainer-backdrop');
+    const lockBtn = STATE.shadowRoot.getElementById('explainer-btn-lock');
+    const openIcon = STATE.shadowRoot.getElementById('lock-icon-open');
+    const closedIcon = STATE.shadowRoot.getElementById('lock-icon-closed');
+    if (!openIcon || !closedIcon) {
+      return;
+    }
+    if (STATE.popupLocked) {
+      openIcon.style.display = 'none';
+      closedIcon.style.display = '';
+      if (lockBtn) { lockBtn.title = '解锁弹窗（当前：点击外部不关闭，可操作页面）'; }
+      if (backdrop) {
+        backdrop.style.pointerEvents = 'none';
+        backdrop.style.background = 'transparent';
+      }
+    } else {
+      openIcon.style.display = '';
+      closedIcon.style.display = 'none';
+      if (lockBtn) { lockBtn.title = '锁定弹窗'; }
+      if (backdrop) {
+        backdrop.style.pointerEvents = 'auto';
+        backdrop.style.background = 'rgba(0,0,0,0.4)';
+      }
+    }
+    DBG.log('Popup', '锁定状态:', STATE.popupLocked);
+  }
+
   // 你点击页面里内层小元素，这个点击事件会一层一层往上传递，传到它所有父元素、直到最顶层 document / window，这个向上传递的过程就叫事件冒泡
   // 复制文本：优先使用 Clipboard API（需 clipboardWrite 权限），失败时降级到临时 textarea + execCommand
   function copyText(text) {
@@ -991,7 +1071,14 @@
     const getHost = () => popupInner.getRootNode().host;
 
     // 弹窗整体拦截所有事件冒泡，隔绝页面
-    popupInner.addEventListener('keydown', e => e.stopPropagation());
+    popupInner.addEventListener('keydown', e => {
+      // 例外：Ctrl / Alt 是全局划词触发键，必须放行到 document（原因见上面 inputEl 的注释）。
+      // 否则点过锁定/关闭按钮后焦点停在按钮上，再按 Ctrl+Alt 会被这里吃掉。
+      if (e.key === 'Control' || e.key === 'Alt') {
+        return;
+      }
+      e.stopPropagation();
+    });
     popupInner.addEventListener('mousedown', e => e.stopPropagation());
     popupInner.addEventListener('click', e => e.stopPropagation());
 
@@ -1017,23 +1104,9 @@
 
     closeBtn.addEventListener('click', destroyPopup);
 
-    // 锁定/解锁按钮
+    // 锁定/解锁按钮：图标、遮罩、STATE 三处联动都交给 applyLockState 统一处理
     lockBtn.addEventListener('click', () => {
-      STATE.popupLocked = !STATE.popupLocked;
-      const backdrop = document.getElementById('explainer-backdrop');
-      const openIcon = shadow.getElementById('lock-icon-open');
-      const closedIcon = shadow.getElementById('lock-icon-closed');
-      if (STATE.popupLocked) {
-        openIcon.style.display = 'none';
-        closedIcon.style.display = '';
-        lockBtn.title = '解锁弹窗（当前：点击外部不关闭，可操作页面）';
-        if (backdrop) { backdrop.style.pointerEvents = 'none'; backdrop.style.background = 'transparent'; }
-      } else {
-        openIcon.style.display = '';
-        closedIcon.style.display = 'none';
-        lockBtn.title = '锁定弹窗';
-        if (backdrop) { backdrop.style.pointerEvents = 'auto'; backdrop.style.background = 'rgba(0,0,0,0.4)'; }
-      }
+      applyLockState(!STATE.popupLocked);
     });
 
     // 复制按钮：将渲染后的 DOM 反向转为 Markdown，公式用 data-formula 还原
@@ -1119,8 +1192,13 @@
 
     sendBtn.addEventListener('click', sendMessage);
     inputEl.addEventListener('keydown', e => {
-      // 停止冒泡，删除、方向键不会传到页面
-      e.stopPropagation();
+      // 停止冒泡，删除、方向键不会传到页面。
+      // 例外：Ctrl / Alt 是全局划词触发键，必须放行 —— 输入框在弹窗打开后会自动获得焦点，
+      // 这里是事件的目标节点，一旦把 Ctrl/Alt 也 stopPropagation 掉，
+      // document 上的全局 keydown 监听永远收不到这两个键（同上）。
+      if (e.key !== 'Control' && e.key !== 'Alt') {
+        e.stopPropagation();
+      }
       const editKeys = ['Backspace','Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'];
       if (editKeys.includes(e.key)) {
         e.stopImmediatePropagation();
@@ -1172,6 +1250,16 @@
   }
 
   function showPopup(selectionRect, mode) {
+    // 先记住旧弹窗的锁定状态：用户锁定弹窗后继续划词，新弹窗要继承这个状态，
+    // 而不是每换一个词都要重新点一次锁定。
+    // 必须放在 destroyPopup() 之前 —— destroyPopup 会把 STATE.popupLocked 清成 false。
+    const keepLocked = STATE.popupLocked;
+    // 同理记住旧弹窗的位置：它可能已经被拖到顺手的地方，换词替换时新弹窗应该待在原地，
+    // 而不是跳回新选区旁边。读的是旧弹窗的实际矩形 —— 拖动改的是 host 的内联 left/top，
+    // 直接读 left/top 拿不到它的真实宽高，而宽高是后面钳制位置时要用到的。
+    // 同样必须在 destroyPopup() 之前读：它会把旧元素整个从 DOM 里删掉。
+    const prevEl = STATE.popupEl;
+    const keepRect = prevEl && prevEl.isConnected ? prevEl.getBoundingClientRect() : null;
     destroyPopup();
     // 遮罩：仅自身接收鼠标，点击空白关闭
     const backdrop = document.createElement('div');
@@ -1259,8 +1347,12 @@
     `;
     shadow.appendChild(popupInner);
 
-    positionPopup(host, selectionRect);
+    positionPopup(host, selectionRect, keepRect);
     bindPopupEvents(shadow);
+
+    // 继承上一个弹窗的锁定状态：新建弹窗时遮罩/图标默认是"未锁定"样式，这里按记住的值覆盖回去。
+    // 整个过程是同步执行的，浏览器还没开始绘制，所以不会出现"先黑一下再变透明"的闪烁。
+    applyLockState(keepLocked);
 
     setTimeout(() => {
       const input = shadow.getElementById('explainer-input');
