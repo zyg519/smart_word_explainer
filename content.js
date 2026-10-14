@@ -1085,7 +1085,13 @@
       try {
         const res = await safeSendMessage({
           type: 'CHAT',
-          payload: { messages: STATE.conversationMessages, systemPrompt: STATE.systemPrompt }
+          // contextText / selectedText 一起带上：后台据此拼接「追问专用」提示词（prompts.js 的 FOLLOWUP_SYSTEM_PROMPT）
+          payload: {
+            messages: STATE.conversationMessages,
+            systemPrompt: STATE.systemPrompt,
+            contextText: STATE.contextText,
+            selectedText: STATE.selectedText
+          }
         });
         removeLoadingMessage(loadId);
         if (res.success) {

@@ -75,6 +75,26 @@ function buildSystemPrompt(contextText, selectedText, customPrompt) {
   return prompt;
 }
 
+// 构建「追问」用的系统提示词
+// 规则（按优先级）：
+//   1. 用户设置过自定义提示词时，追问继续沿用首次解读那份 —— 尊重用户自己的模板，不偷偷替换成默认的；
+//   2. 否则使用 prompts.js 里的 FOLLOWUP_SYSTEM_PROMPT，并把首次解读时的原文上下文、选中内容填进去；
+//   3. 如果客户端没带上下文（例如旧版 content script），退回它传上来的 systemPrompt，保证不报错。
+function buildFollowupSystemPrompt(contextText, selectedText, customPrompt, fallbackSystemPrompt) {
+  if (!customPrompt && contextText) {
+    const prompt = FOLLOWUP_SYSTEM_PROMPT
+      .replace(/\{CONTEXT\}/g, contextText)
+      .replace(/\{SELECTION\}/g, selectedText || '');
+
+    DEBUG.log('Prompt', '追问使用 FOLLOWUP_SYSTEM_PROMPT',
+      '| 上下文长度:', contextText?.length, '| 选中长度:', selectedText?.length);
+    return prompt;
+  }
+
+  DEBUG.log('Prompt', customPrompt ? '追问沿用自定义提示词' : '追问沿用首次解读提示词（客户端未提供上下文）');
+  return fallbackSystemPrompt;
+}
+
 // 构建 API 请求体（流式/非流式共用）
 function buildRequestBody(config, messages, stream) {
   const body = {
@@ -143,7 +163,9 @@ async function handleExplainStreamOrNot(payload, tabId, sendResponse) {
 
 // 统一入口：对话追问流式/非流式
 async function handleChatStreamOrNot(payload, tabId, sendResponse) {
-  const { messages, systemPrompt } = payload;
+  // contextText / selectedText 由 content.js 一并传来，用于拼接追问专用提示词
+  // （systemPrompt 是首次解读时用的那份，作为兜底保留）
+  const { messages, systemPrompt, contextText, selectedText } = payload;
   DEBUG.log('Chat', '追问消息数:', messages?.length);
 
   const config = await getConfig();
@@ -152,7 +174,8 @@ async function handleChatStreamOrNot(payload, tabId, sendResponse) {
     return;
   }
 
-  const fullMessages = [{ role: 'system', content: systemPrompt }, ...messages];
+  const followupPrompt = buildFollowupSystemPrompt(contextText, selectedText, config.systemPrompt, systemPrompt);
+  const fullMessages = [{ role: 'system', content: followupPrompt }, ...messages];
 
   if (config.streamEnabled) {
     sendResponse({ success: true, streaming: true });
