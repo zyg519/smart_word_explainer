@@ -854,6 +854,127 @@
     }
   }
   // 你点击页面里内层小元素，这个点击事件会一层一层往上传递，传到它所有父元素、直到最顶层 document / window，这个向上传递的过程就叫事件冒泡
+  // 复制文本：优先使用 Clipboard API（需 clipboardWrite 权限），失败时降级到临时 textarea + execCommand
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).catch(() => copyTextFallback(text));
+    }
+    return copyTextFallback(text);
+  }
+
+  function copyTextFallback(text) {
+    return new Promise((resolve, reject) => {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        ta.remove();
+        if (ok) { resolve(); } else { reject(new Error('copy failed')); }
+      } catch (e) { reject(e); }
+    });
+  }
+
+  // ============================================================
+  // 弹窗内 Ctrl+C 复制（由扩展自己接管，不依赖浏览器默认复制）
+  // 为什么要接管：很多网站会在 document 上拦截 copy 事件（document.oncopy = () => false），
+  // 或者在按下 Ctrl+C 时 preventDefault；浏览器自带的复制被"吃掉"后，剪贴板里什么都没有。
+  // 接管后只要"选区在弹窗里"，就由扩展自己把文字写进剪贴板，网站拦不到。
+  // ============================================================
+
+  // 取弹窗内的当前选区：
+  // 选区在 Shadow DOM 里时，shadowRoot.getSelection() 最可靠，拿不到再退回 window.getSelection()
+  function getPopupSelection() {
+    const sr = STATE.shadowRoot;
+    if (sr && typeof sr.getSelection === 'function') {
+      const s = sr.getSelection();
+      if (s && s.rangeCount > 0 && s.toString()) {
+        return s;
+      }
+    }
+    const w = window.getSelection();
+    if (w && w.rangeCount > 0 && w.toString()) {
+      return w;
+    }
+    return null;
+  }
+
+  // 判断选区是不是落在弹窗（Shadow DOM）内部，是才由扩展接管复制，避免影响页面自己的复制
+  function isSelectionInPopup(sel) {
+    if (!sel || !STATE.shadowRoot || !STATE.popupEl) {
+      return false;
+    }
+    const node = sel.anchorNode;                // 选区起点所在的 DOM 节点（可能是文本节点）
+    if (!node) {
+      return false;
+    }
+    // Shadow DOM 内的节点用 shadowRoot.contains 判断；如果浏览器把节点重定向成了宿主元素，就用 popupEl 判断
+    return STATE.shadowRoot.contains(node) || STATE.popupEl.contains(node);
+  }
+
+  // 焦点是不是在弹窗输入框里：是的话说明用户想复制自己打的字，交给浏览器默认行为处理，扩展不插手
+  function isFocusInPopupInput() {
+    const focused = STATE.shadowRoot && STATE.shadowRoot.activeElement;
+    return !!focused && (focused.tagName === 'TEXTAREA' || focused.tagName === 'INPUT');
+  }
+
+  // 把弹窗选区转成写进剪贴板的文本。
+  // 选区里含 KaTeX 公式时必须走 domToMarkdown：KaTeX 会同时渲染 MathML 和 HTML 两份内容，
+  // 直接取选区文字会得到 "x 2 +y 2 =r 2" 这种重复乱码；
+  // domToMarkdown 会用公式标签上的 data-formula 还原成 $x^2+y^2$。
+  function serializePopupSelection(sel) {
+    let frag = null;
+    try {
+      frag = sel.getRangeAt(0).cloneContents();  // 克隆选区内容（DocumentFragment），不改动页面
+    } catch (e) {
+      frag = null;
+    }
+    if (frag && frag.querySelector && frag.querySelector('.math-rendered')) {
+      return domToMarkdown(frag);
+    }
+    return sel.toString();
+  }
+
+  // 统一的"把弹窗选区写进剪贴板"入口，返回 true 表示这次复制已经由扩展处理
+  function copyPopupSelection(sel) {
+    const text = serializePopupSelection(sel);
+    if (!text) {
+      return false;
+    }
+    copyText(text).catch(err => DBG.warn('Copy', '写入剪贴板失败', err));
+    return true;
+  }
+
+  // 用 window 的"捕获阶段"监听键盘：捕获阶段比页面挂在 document 上的拦截代码更早执行，
+  // 所以即使页面 preventDefault 掉 Ctrl+C、浏览器默认复制失效，我们也能自己完成复制。
+  window.addEventListener('keydown', (e) => {
+    if (!STATE.popupEl || !STATE.shadowRoot) {
+      return;
+    }
+    // 只处理 Ctrl+C / Cmd+C / Ctrl+Insert；带 Alt（扩展自己的触发快捷键）不处理
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) {
+      return;
+    }
+    const k = e.key;
+    if (k !== 'c' && k !== 'C' && k !== 'Insert') {
+      return;
+    }
+    if (isFocusInPopupInput()) {
+      return;
+    }
+    const sel = getPopupSelection();
+    if (!isSelectionInPopup(sel)) {
+      return;
+    }
+    if (!copyPopupSelection(sel)) {
+      return;
+    }
+    // 已经自己复制好了，阻止浏览器默认复制（否则默认行为可能又被网站拦截掉，或写出公式乱码）
+    e.preventDefault();
+  }, true);
+
   // 修复版事件绑定：弹窗内按键停止冒泡，删除键不会穿透页面
   // popupInner 是整个弹窗容器；
   // 在弹窗内任意位置按下按键（包括 Escape），触发 keydown；
@@ -873,6 +994,26 @@
     popupInner.addEventListener('keydown', e => e.stopPropagation());
     popupInner.addEventListener('mousedown', e => e.stopPropagation());
     popupInner.addEventListener('click', e => e.stopPropagation());
+
+    // 右键菜单「复制」走的仍是浏览器默认 copy 事件：
+    // 在弹窗内部（冒泡阶段）抢先写好剪贴板数据，这样即便页面随后 preventDefault，内容也已经写进去了。
+    popupInner.addEventListener('copy', (e) => {
+      if (isFocusInPopupInput()) {
+        return;
+      }
+      const sel = getPopupSelection();
+      if (!isSelectionInPopup(sel)) {
+        return;
+      }
+      const text = serializePopupSelection(sel);
+      if (!text) {
+        return;
+      }
+      if (e.clipboardData) {
+        e.clipboardData.setData('text/plain', text);
+        e.preventDefault();
+      }
+    });
 
     closeBtn.addEventListener('click', destroyPopup);
 
@@ -901,7 +1042,7 @@
       if (!btn) return;
       const bubble = btn.parentElement.querySelector('.explainer-bubble');
       const md = bubble ? domToMarkdown(bubble) : '';
-      navigator.clipboard.writeText(md).then(() => {
+      copyText(md).then(() => {
         btn.textContent = '✅';
         setTimeout(() => { btn.textContent = '📋'; }, 1500);
       }).catch(() => {

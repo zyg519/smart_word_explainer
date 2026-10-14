@@ -4,7 +4,8 @@
   "version": "1.0.0",
   "description": "选中文本后按 Alt 键，结合上下文调用大模型解读单词或段落，支持对话追问",
   "permissions": [
-    "storage"
+    "storage",
+    "clipboardWrite"
   ],
   "host_permissions": [
     "<all_urls>"
